@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.20)
+add_executable(harness_smoke_test harness_smoke_test.c)
+target_link_libraries(harness_smoke_test PRIVATE harness)
+target_include_directories(harness_smoke_test PRIVATE ../include)
+add_test(NAME harness_smoke COMMAND harness_smoke_test)
