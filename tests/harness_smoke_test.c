@@ -27,7 +27,7 @@ int main(void) {
 
     rc = harness_lua_log_interaction(ctx, "stub-model", "hello", "hi there");
     assert(rc == 0);
-    printf("  log_interaction: OK (count=%llu)\n", (unsigned long long)ctx->interactions_logged);
+    printf("  log_interaction: OK\n");
 
     harness_event_t ev;
     rc = harness_next_event(ctx, &ev);

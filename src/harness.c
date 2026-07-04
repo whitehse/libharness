@@ -1,9 +1,13 @@
+/* libharness - core state machine (ADR 006 plumbing, ADR 010 interfaces)
+ * Pure C, syscall-free, callback-free. Lua for policy/tools/personality/looping.
+ * All I/O and events owned by caller. Matches sibling lib* patterns.
+ */
 #include "harness.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
-/* Internal state machine states (libassh style, explicit, deterministic) */
+ /* Internal state machine states (libassh style, explicit, deterministic) */
 typedef enum {
     HARNESS_STATE_INIT = 0,
     HARNESS_STATE_READY,
