@@ -2,6 +2,7 @@
 
 See AGENTS.md for entry point.
 See ARCHITECTURE.md for design and module boundaries.
+See TODO.md (repo root) for major remaining implementation work.
 See DOMAIN.md for domain concepts (Session, Model, Context, Response, tools, SOUL, pg_vector, Honcho).
 ADRs in docs/decisions/:
 

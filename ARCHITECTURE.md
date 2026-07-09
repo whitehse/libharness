@@ -1,11 +1,11 @@
 # ARCHITECTURE.md — libharness
 
 ## Module Boundaries
-- **harness.c**: Core state machine (explicit states: INIT, READY, PROCESSING_OPENAI, TOOL_CALL, LOOPING, LOGGING, VECTOR_OP, ERROR). Pure, no syscalls. Event queue, extension registry. Session-oriented bookkeeping is data + events only (ADR 002).
-- **lua_bindings.c**: Lua C API integration. Exposes harness characteristics to Lua scripts. Lua defines deterministic behavior, tools, loop criteria, SOUL assembly, Honcho mirror policy, secret redaction policy. Scripts loaded from PG or memory (no local files preferred).
-- **openai_processor.c**: OpenAI-compatible context builder and response parser. Identity-prefixed multi-participant messages, dynamic tools + SOUL injection. JSON payloads only; transport in caller (librest/shaggy or other providers). Normalizes requires_action vs completed (ADR 002).
-- **honcho_interface.c**: Abstraction over Honcho workspace/peer/session/message graph for long-term facts, conclusions, session context. Peer ids are participant ids. Tool calls not mirrored by default.
-- **pique_integration.c**: libpique (PostgreSQL wire protocol) integration. Logs every model interaction. Uses pg_vector for:
+- **harness.c** + **src/harness_internal.h**: Core state machine (INIT, READY, PROCESSING_OPENAI, TOOL_CALL, LOOPING, LOGGING, VECTOR_OP, ERROR). Structured event queue. Session/participant/message/SOUL/tool slots (ADR 002). Pure, no syscalls.
+- **lua_bindings.c**: Lua C API integration (`harness_lua_init`). Exposes policy helpers (tools, SOUL, loop, participants, messages, context_build, Honcho mirror). Scripts prefer PG/memory over paths.
+- **openai_processor.c**: Context builder + response status parse (identity prefix, secret references, tools). JSON only; transport in caller (librest/shaggy or other providers).
+- **honcho_interface.c**: Optional Honcho handle attach; mirror policy is narrative-only by default (tool calls excluded).
+- **pique_integration.c**: libpique (PostgreSQL wire protocol) integration stubs for interaction log, classify, personality/SOUL storage. Uses pg_vector for:
   - Token-reducing classification of state/data
   - Personality embeddings and similarity search
   - Local memory vectors

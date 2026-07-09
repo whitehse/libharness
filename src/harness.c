@@ -1,83 +1,119 @@
-/* libharness - core state machine (ADR 006 plumbing, ADR 010 interfaces)
- * Pure C, syscall-free, callback-free. Lua for policy/tools/personality/looping.
- * All I/O and events owned by caller. Matches sibling lib* patterns.
+/* libharness - core state machine (ADR 006 plumbing, ADR 002 domain, ADR 010)
+ * Pure C, syscall-free, callback-free. Lua for policy/tools/SOUL/looping.
+ * All I/O and events owned by caller.
  */
-#include "harness.h"
+#include "harness_internal.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
- /* Internal state machine states (libassh style, explicit, deterministic) */
-typedef enum {
-    HARNESS_STATE_INIT = 0,
-    HARNESS_STATE_READY,
-    HARNESS_STATE_PROCESSING_OPENAI,
-    HARNESS_STATE_TOOL_CALL,
-    HARNESS_STATE_LOOPING,
-    HARNESS_STATE_LOGGING,
-    HARNESS_STATE_VECTOR_OP,
-    HARNESS_STATE_ERROR,
-    HARNESS_STATE_DESTROYED
-} harness_state_t;
+static void copy_id(char* dst, size_t cap, const char* src) {
+    if (!dst || cap == 0) return;
+    if (!src) {
+        dst[0] = '\0';
+        return;
+    }
+    strncpy(dst, src, cap - 1);
+    dst[cap - 1] = '\0';
+}
 
-struct harness_ctx {
-    harness_role_t role;
-    harness_state_t state;
-    harness_config_t config;
-    /* event queue stub */
-    harness_event_t* event_queue;
-    size_t queue_size;
-    size_t queue_head;
-    size_t queue_tail;
-    /* Lua state placeholder (real lua_State* in lua_bindings) */
-    void* lua_state;
-    /* pique and honcho handles */
-    void* pique;
-    void* honcho;
-    /* extension registry stub */
-    struct {
-        char name[64];
-        harness_extension_fn fn;
-    } extensions[16];
-    size_t ext_count;
-    /* output buffer */
-    uint8_t* output_buf;
-    size_t output_len;
-    /* simple stats */
-    uint64_t interactions_logged;
-};
+void harness_emit(harness_ctx_t* ctx, harness_event_type_t type,
+                  const char* peer_id, const char* call_id, int code, size_t index) {
+    if (!ctx || ctx->state == HARNESS_STATE_DESTROYED) return;
+    if (ctx->queue_tail >= ctx->queue_size) return;
+    harness_event_t* ev = &ctx->event_queue[ctx->queue_tail++];
+    memset(ev, 0, sizeof(*ev));
+    ev->type = type;
+    copy_id(ev->peer_id, sizeof(ev->peer_id), peer_id);
+    copy_id(ev->call_id, sizeof(ev->call_id), call_id);
+    ev->code = code;
+    ev->index = index;
+}
+
+int harness_set_output(harness_ctx_t* ctx, const void* data, size_t len) {
+    if (!ctx) return -1;
+    if (len == 0) {
+        ctx->output_len = 0;
+        return 0;
+    }
+    if (len > ctx->output_cap) {
+        uint8_t* n = (uint8_t*)realloc(ctx->output_buf, len);
+        if (!n) return -1;
+        ctx->output_buf = n;
+        ctx->output_cap = len;
+    }
+    memcpy(ctx->output_buf, data, len);
+    ctx->output_len = len;
+    return 0;
+}
+
+const harness_participant_slot_t* harness_find_participant(const harness_ctx_t* ctx,
+                                                          const char* peer_id) {
+    size_t i;
+    if (!ctx || !peer_id) return NULL;
+    for (i = 0; i < ctx->participant_count; i++) {
+        if (strcmp(ctx->participants[i].peer_id, peer_id) == 0)
+            return &ctx->participants[i];
+    }
+    return NULL;
+}
+
+void harness_config_init_defaults(harness_config_t* config) {
+    if (!config) return;
+    memset(config, 0, sizeof(*config));
+    config->event_queue_size = HARNESS_DEFAULT_QUEUE;
+    config->max_participants = HARNESS_DEFAULT_PARTICIPANTS;
+    config->max_messages = HARNESS_DEFAULT_MESSAGES;
+    config->max_tools = HARNESS_DEFAULT_TOOLS;
+}
 
 harness_ctx_t* harness_create(harness_role_t role) {
-    harness_config_t default_cfg = {
-        .event_queue_size = 64,
-        .lua_init_script = NULL,
-        .pique_ctx = NULL,
-        .honcho_ctx = NULL,
-        .user_data = NULL
-    };
-    return harness_create_with_config(role, &default_cfg);
+    harness_config_t cfg;
+    harness_config_init_defaults(&cfg);
+    return harness_create_with_config(role, &cfg);
 }
 
 harness_ctx_t* harness_create_with_config(harness_role_t role, const harness_config_t* config) {
+    harness_ctx_t* ctx;
+    size_t q, p, m, t;
+
     if (!config) return NULL;
-    harness_ctx_t* ctx = calloc(1, sizeof(harness_ctx_t));
+    ctx = (harness_ctx_t*)calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;
+
     ctx->role = role;
     ctx->state = HARNESS_STATE_INIT;
     ctx->config = *config;
-    ctx->queue_size = config->event_queue_size ? config->event_queue_size : 64;
-    ctx->event_queue = calloc(ctx->queue_size, sizeof(harness_event_t));
-    if (!ctx->event_queue) {
+
+    q = config->event_queue_size ? config->event_queue_size : HARNESS_DEFAULT_QUEUE;
+    p = config->max_participants ? config->max_participants : HARNESS_DEFAULT_PARTICIPANTS;
+    m = config->max_messages ? config->max_messages : HARNESS_DEFAULT_MESSAGES;
+    t = config->max_tools ? config->max_tools : HARNESS_DEFAULT_TOOLS;
+
+    ctx->queue_size = q;
+    ctx->event_queue = (harness_event_t*)calloc(q, sizeof(harness_event_t));
+    ctx->participants = (harness_participant_slot_t*)calloc(p, sizeof(*ctx->participants));
+    ctx->messages = (harness_message_slot_t*)calloc(m, sizeof(*ctx->messages));
+    ctx->tools = (harness_tool_slot_t*)calloc(t, sizeof(*ctx->tools));
+    if (!ctx->event_queue || !ctx->participants || !ctx->messages || !ctx->tools) {
+        free(ctx->event_queue);
+        free(ctx->participants);
+        free(ctx->messages);
+        free(ctx->tools);
         free(ctx);
         return NULL;
     }
-    ctx->lua_state = NULL; /* populated by lua_bindings init */
+    ctx->participant_cap = p;
+    ctx->message_cap = m;
+    ctx->tool_cap = t;
+
+    copy_id(ctx->workspace_id, sizeof(ctx->workspace_id), config->workspace_id);
+    copy_id(ctx->session_id, sizeof(ctx->session_id), config->session_id);
+    copy_id(ctx->acting_peer_id, sizeof(ctx->acting_peer_id), config->acting_peer_id);
+
     ctx->pique = config->pique_ctx;
     ctx->honcho = config->honcho_ctx;
-    ctx->ext_count = 0;
-    ctx->output_buf = NULL;
-    ctx->output_len = 0;
-    ctx->interactions_logged = 0;
+    ctx->lua_state = NULL;
     ctx->state = HARNESS_STATE_READY;
     return ctx;
 }
@@ -86,8 +122,10 @@ void harness_destroy(harness_ctx_t* ctx) {
     if (!ctx) return;
     ctx->state = HARNESS_STATE_DESTROYED;
     free(ctx->event_queue);
+    free(ctx->participants);
+    free(ctx->messages);
+    free(ctx->tools);
     free(ctx->output_buf);
-    /* Note: do not free pique/honcho/lua_state; caller owns */
     free(ctx);
 }
 
@@ -96,24 +134,202 @@ void harness_reset(harness_ctx_t* ctx) {
     ctx->state = HARNESS_STATE_READY;
     ctx->queue_head = ctx->queue_tail = 0;
     ctx->output_len = 0;
+    ctx->participant_count = 0;
+    ctx->message_count = 0;
+    ctx->tool_count = 0;
+    ctx->soul[0] = '\0';
+    ctx->last_response_status = HARNESS_RESPONSE_UNKNOWN;
+    ctx->last_tool_call_count = 0;
+    memset(ctx->participants, 0, ctx->participant_cap * sizeof(*ctx->participants));
+    memset(ctx->messages, 0, ctx->message_cap * sizeof(*ctx->messages));
+    memset(ctx->tools, 0, ctx->tool_cap * sizeof(*ctx->tools));
+}
+
+int harness_session_set(harness_ctx_t* ctx, const char* workspace_id, const char* session_id) {
+    if (!ctx || ctx->state == HARNESS_STATE_DESTROYED) return -1;
+    copy_id(ctx->workspace_id, sizeof(ctx->workspace_id), workspace_id);
+    copy_id(ctx->session_id, sizeof(ctx->session_id), session_id);
+    harness_emit(ctx, HARNESS_EVENT_SESSION_SET, NULL, NULL, 0, 0);
+    return 0;
+}
+
+int harness_session_get(const harness_ctx_t* ctx,
+                        const char** workspace_id_out,
+                        const char** session_id_out) {
+    if (!ctx) return -1;
+    if (workspace_id_out) *workspace_id_out = ctx->workspace_id;
+    if (session_id_out) *session_id_out = ctx->session_id;
+    return 0;
+}
+
+int harness_set_acting_peer(harness_ctx_t* ctx, const char* peer_id) {
+    if (!ctx || !peer_id) return -1;
+    copy_id(ctx->acting_peer_id, sizeof(ctx->acting_peer_id), peer_id);
+    return 0;
+}
+
+int harness_participant_add(harness_ctx_t* ctx,
+                            const char* peer_id,
+                            harness_participant_kind_t kind,
+                            bool privileged) {
+    harness_participant_slot_t* slot;
+    if (!ctx || !peer_id || peer_id[0] == '\0') return -1;
+    if (harness_find_participant(ctx, peer_id)) return -1; /* duplicate */
+    if (ctx->participant_count >= ctx->participant_cap) return -1;
+    slot = &ctx->participants[ctx->participant_count];
+    copy_id(slot->peer_id, sizeof(slot->peer_id), peer_id);
+    slot->kind = kind;
+    slot->privileged = privileged;
+    ctx->participant_count++;
+    harness_emit(ctx, HARNESS_EVENT_PARTICIPANT_ADDED, peer_id, NULL, (int)kind,
+                 ctx->participant_count - 1);
+    return 0;
+}
+
+size_t harness_participant_count(const harness_ctx_t* ctx) {
+    return ctx ? ctx->participant_count : 0;
+}
+
+int harness_participant_get(const harness_ctx_t* ctx,
+                            size_t index,
+                            char* peer_id_out,
+                            size_t peer_id_cap,
+                            harness_participant_kind_t* kind_out,
+                            bool* privileged_out) {
+    const harness_participant_slot_t* slot;
+    if (!ctx || index >= ctx->participant_count) return -1;
+    slot = &ctx->participants[index];
+    if (peer_id_out && peer_id_cap > 0) copy_id(peer_id_out, peer_id_cap, slot->peer_id);
+    if (kind_out) *kind_out = slot->kind;
+    if (privileged_out) *privileged_out = slot->privileged;
+    return 0;
+}
+
+int harness_message_append(harness_ctx_t* ctx,
+                           const char* peer_id,
+                           harness_message_role_t role,
+                           const char* content,
+                           bool is_secret) {
+    harness_message_slot_t* slot;
+    if (!ctx || !content) return -1;
+    if (ctx->message_count >= ctx->message_cap) return -1;
+    slot = &ctx->messages[ctx->message_count];
+    memset(slot, 0, sizeof(*slot));
+    copy_id(slot->peer_id, sizeof(slot->peer_id), peer_id ? peer_id : "");
+    slot->role = role;
+    copy_id(slot->content, sizeof(slot->content), content);
+    slot->is_secret = is_secret;
+    slot->in_use = true;
+    ctx->message_count++;
+    if (is_secret) {
+        ctx->secret_seq++;
+        harness_emit(ctx, HARNESS_EVENT_SECRET_REFERENCED, peer_id, NULL,
+                     (int)ctx->secret_seq, ctx->message_count - 1);
+    }
+    harness_emit(ctx, HARNESS_EVENT_MESSAGE_APPENDED, peer_id, NULL, (int)role,
+                 ctx->message_count - 1);
+    return 0;
+}
+
+int harness_message_append_tool_result(harness_ctx_t* ctx,
+                                       const char* tool_call_id,
+                                       const char* content) {
+    harness_message_slot_t* slot;
+    if (!ctx || !tool_call_id || !content) return -1;
+    if (ctx->message_count >= ctx->message_cap) return -1;
+    slot = &ctx->messages[ctx->message_count];
+    memset(slot, 0, sizeof(*slot));
+    slot->role = HARNESS_MSG_TOOL;
+    copy_id(slot->tool_call_id, sizeof(slot->tool_call_id), tool_call_id);
+    copy_id(slot->content, sizeof(slot->content), content);
+    slot->in_use = true;
+    ctx->message_count++;
+    harness_emit(ctx, HARNESS_EVENT_MESSAGE_APPENDED, NULL, tool_call_id,
+                 (int)HARNESS_MSG_TOOL, ctx->message_count - 1);
+    return 0;
+}
+
+size_t harness_message_count(const harness_ctx_t* ctx) {
+    return ctx ? ctx->message_count : 0;
+}
+
+int harness_format_identity_prefix(const char* peer_id, char* buf, size_t buflen) {
+    int n;
+    if (!peer_id || !buf || buflen == 0) return -1;
+    n = snprintf(buf, buflen, "[%s]", peer_id);
+    if (n < 0) return -1;
+    return n;
+}
+
+int harness_soul_set(harness_ctx_t* ctx, const char* soul_text) {
+    if (!ctx || !soul_text) return -1;
+    copy_id(ctx->soul, sizeof(ctx->soul), soul_text);
+    harness_emit(ctx, HARNESS_EVENT_SOUL_SET, NULL, NULL, 0, 0);
+    return 0;
+}
+
+const char* harness_soul_get(const harness_ctx_t* ctx) {
+    if (!ctx) return NULL;
+    return ctx->soul;
+}
+
+int harness_tool_register_json(harness_ctx_t* ctx, const char* tool_json) {
+    harness_tool_slot_t* slot;
+    if (!ctx || !tool_json) return -1;
+    if (ctx->tool_count >= ctx->tool_cap) return -1;
+    slot = &ctx->tools[ctx->tool_count];
+    copy_id(slot->json, sizeof(slot->json), tool_json);
+    slot->in_use = true;
+    ctx->tool_count++;
+    harness_emit(ctx, HARNESS_EVENT_TOOL_REGISTERED, NULL, NULL, 0, ctx->tool_count - 1);
+    return 0;
+}
+
+void harness_tools_clear(harness_ctx_t* ctx) {
+    if (!ctx) return;
+    memset(ctx->tools, 0, ctx->tool_cap * sizeof(*ctx->tools));
+    ctx->tool_count = 0;
+}
+
+size_t harness_tool_count(const harness_ctx_t* ctx) {
+    return ctx ? ctx->tool_count : 0;
+}
+
+int harness_tools_enumerate(harness_ctx_t* ctx) {
+    if (!ctx) return -1;
+    harness_emit(ctx, HARNESS_EVENT_TOOL_ENUMERATED, NULL, NULL, 0, ctx->tool_count);
+    return 0;
+}
+
+int harness_context_build(harness_ctx_t* ctx, const harness_context_params_t* params) {
+    if (!ctx || !params) return -1;
+    ctx->state = HARNESS_STATE_PROCESSING_OPENAI;
+    return harness_openai_context_build_impl(ctx, params);
+}
+
+int harness_response_parse(harness_ctx_t* ctx, const uint8_t* data, size_t len) {
+    if (!ctx || !data) return -1;
+    return harness_openai_response_parse_impl(ctx, data, len);
+}
+
+harness_response_status_t harness_response_status(const harness_ctx_t* ctx) {
+    return ctx ? ctx->last_response_status : HARNESS_RESPONSE_UNKNOWN;
+}
+
+size_t harness_response_tool_call_count(const harness_ctx_t* ctx) {
+    return ctx ? ctx->last_tool_call_count : 0;
 }
 
 int harness_feed_input(harness_ctx_t* ctx, const uint8_t* data, size_t len) {
-    (void)data; (void)len;
-    if (!ctx || ctx->state == HARNESS_STATE_DESTROYED) return -1;
-    /* Stub: in real impl, parse OpenAI JSON or Lua results, advance state machine */
-    /* For now, just acknowledge and emit a synthetic event */
-    if (ctx->queue_tail < ctx->queue_size) {
-        ctx->event_queue[ctx->queue_tail++] = HARNESS_EVENT_PERSONALITY_SET; /* example */
-    }
-    ctx->state = HARNESS_STATE_READY;
-    return 0;
+    /* ADR 002: inbound buffers from provider are responses */
+    return harness_response_parse(ctx, data, len);
 }
 
 int harness_next_event(harness_ctx_t* ctx, harness_event_t* event) {
     if (!ctx || !event || ctx->state == HARNESS_STATE_DESTROYED) return -1;
     if (ctx->queue_head >= ctx->queue_tail) {
-        *event = HARNESS_EVENT_NONE;
+        memset(event, 0, sizeof(*event));
+        event->type = HARNESS_EVENT_NONE;
         return 0;
     }
     *event = ctx->event_queue[ctx->queue_head++];
@@ -121,96 +337,131 @@ int harness_next_event(harness_ctx_t* ctx, harness_event_t* event) {
 }
 
 int harness_get_output(harness_ctx_t* ctx, uint8_t* buf, size_t max_len, size_t* out_len) {
+    size_t to_copy;
     if (!ctx || !buf || !out_len) return -1;
-    size_t to_copy = ctx->output_len > max_len ? max_len : ctx->output_len;
-    if (ctx->output_buf) memcpy(buf, ctx->output_buf, to_copy);
+    to_copy = ctx->output_len > max_len ? max_len : ctx->output_len;
+    if (to_copy && ctx->output_buf) memcpy(buf, ctx->output_buf, to_copy);
     *out_len = to_copy;
     return 0;
 }
 
+bool harness_should_loop(harness_ctx_t* ctx, const char* criteria) {
+    if (!ctx || !criteria) return false;
+    ctx->state = HARNESS_STATE_LOOPING;
+    /* Policy lives in Lua; stub always continues once and surfaces event */
+    harness_emit(ctx, HARNESS_EVENT_LOOP_DECISION, NULL, NULL, 1, 0);
+    return true;
+}
+
+int harness_log_interaction(harness_ctx_t* ctx,
+                            const char* model,
+                            const char* prompt,
+                            const char* response) {
+    (void)prompt;
+    (void)response;
+    if (!ctx || !model) return -1;
+    ctx->interactions_logged++;
+    ctx->state = HARNESS_STATE_LOGGING;
+    harness_emit(ctx, HARNESS_EVENT_INTERACTION_LOGGED, NULL, NULL, 0,
+                 (size_t)ctx->interactions_logged);
+    return 0;
+}
+
+int harness_classify_vector(harness_ctx_t* ctx,
+                            const char* data,
+                            const char* collection) {
+    (void)collection;
+    if (!ctx || !data) return -1;
+    ctx->state = HARNESS_STATE_VECTOR_OP;
+    harness_emit(ctx, HARNESS_EVENT_VECTOR_CLASSIFIED, NULL, NULL, 0, 0);
+    return 0;
+}
+
+int harness_honcho_mirror_message(harness_ctx_t* ctx,
+                                  const char* peer_id,
+                                  const char* content,
+                                  const char* metadata_json) {
+    (void)metadata_json;
+    if (!ctx || !peer_id || !content) return -1;
+    /* ADR 002: narrative only — callers must not pass tool-call payloads here */
+    harness_emit(ctx, HARNESS_EVENT_HONCHO_MIRRORED, peer_id, NULL, 0, 0);
+    return 0;
+}
+
+int harness_honcho_store_memory(harness_ctx_t* ctx,
+                                const char* peer_id,
+                                const char* key,
+                                const char* fact) {
+    (void)peer_id;
+    if (!ctx || !key || !fact) return -1;
+    return 0;
+}
+
+const char* harness_honcho_get_memory(harness_ctx_t* ctx,
+                                      const char* peer_id,
+                                      const char* key) {
+    (void)peer_id;
+    if (!ctx || !key) return NULL;
+    return "stub-memory-value";
+}
+
 int harness_register_extension(harness_ctx_t* ctx, const char* name, harness_extension_fn fn) {
-    if (!ctx || !name || !fn || ctx->ext_count >= 16) return -1;
-    strncpy(ctx->extensions[ctx->ext_count].name, name, 63);
+    if (!ctx || !name || !fn || ctx->ext_count >= HARNESS_EXT_MAX) return -1;
+    copy_id(ctx->extensions[ctx->ext_count].name, sizeof(ctx->extensions[0].name), name);
     ctx->extensions[ctx->ext_count].fn = fn;
     ctx->ext_count++;
-    /* Emit event */
-    if (ctx->queue_tail < ctx->queue_size) {
-        ctx->event_queue[ctx->queue_tail++] = HARNESS_EVENT_EXTENSION_CALLED;
-    }
+    harness_emit(ctx, HARNESS_EVENT_EXTENSION_CALLED, NULL, NULL, 0, ctx->ext_count - 1);
     return 0;
 }
 
 const char* harness_version(void) {
-    return "0.1.0-bootstrap";
+    return "0.1.0-adr002";
 }
 
-/* Stubs for Lua-called functions (real impl in lua_bindings + pique_integration) */
+/* ---- Compatibility wrappers (bootstrap Lua names) ---- */
+
 int harness_lua_enumerate_tools(harness_ctx_t* ctx) {
-    if (!ctx) return -1;
-    /* TODO: query Lua registry or PG for tools, emit event */
-    if (ctx->queue_tail < ctx->queue_size) {
-        ctx->event_queue[ctx->queue_tail++] = HARNESS_EVENT_TOOL_ENUMERATED;
-    }
-    return 0;
+    return harness_tools_enumerate(ctx);
 }
 
 int harness_lua_set_personality(harness_ctx_t* ctx, const char* personality_json_or_id) {
-    if (!ctx || !personality_json_or_id) return -1;
-    /* TODO: store in PG via pique + pg_vector, or Honcho */
-    if (ctx->queue_tail < ctx->queue_size) {
-        ctx->event_queue[ctx->queue_tail++] = HARNESS_EVENT_PERSONALITY_SET;
-    }
-    return 0;
+    return harness_soul_set(ctx, personality_json_or_id);
 }
 
 int harness_lua_process_openai_compat(harness_ctx_t* ctx, const char* request_json) {
+    harness_context_params_t params;
     if (!ctx || !request_json) return -1;
+    /* Legacy path: treat string as opaque prebuilt context already in output */
+    if (harness_set_output(ctx, request_json, strlen(request_json)) != 0) return -1;
+    memset(&params, 0, sizeof(params));
+    params.model = "legacy";
+    params.temperature = -1.0;
+    params.include_tools = false;
+    params.identity_prefix = false;
+    params.redact_secrets = false;
+    harness_emit(ctx, HARNESS_EVENT_CONTEXT_READY, NULL, NULL, 0, 0);
     ctx->state = HARNESS_STATE_PROCESSING_OPENAI;
-    /* TODO: prepare request buffer for caller to send via librest/shaggy; parse response */
     return 0;
 }
 
 bool harness_lua_should_loop(harness_ctx_t* ctx, const char* criteria) {
-    if (!ctx || !criteria) return false;
-    /* TODO: evaluate Lua criteria or simple state */
-    ctx->state = HARNESS_STATE_LOOPING;
-    if (ctx->queue_tail < ctx->queue_size) {
-        ctx->event_queue[ctx->queue_tail++] = HARNESS_EVENT_LOOP_DECISION;
-    }
-    return true; /* stub */
+    return harness_should_loop(ctx, criteria);
 }
 
 int harness_lua_log_interaction(harness_ctx_t* ctx, const char* model, const char* prompt, const char* response) {
-    (void)prompt; (void)response;
-    if (!ctx || !model) return -1;
-    ctx->interactions_logged++;
-    ctx->state = HARNESS_STATE_LOGGING;
-    /* TODO: INSERT into PG via libpique, with vector embedding if possible */
-    if (ctx->queue_tail < ctx->queue_size) {
-        ctx->event_queue[ctx->queue_tail++] = HARNESS_EVENT_INTERACTION_LOGGED;
-    }
-    return 0;
+    return harness_log_interaction(ctx, model, prompt, response);
 }
 
 int harness_lua_classify_vector(harness_ctx_t* ctx, const char* data, const char* collection) {
-    (void)collection;
-    if (!ctx || !data) return -1;
-    ctx->state = HARNESS_STATE_VECTOR_OP;
-    /* TODO: use libpique + pg_vector to embed/classify, reduce tokens */
-    if (ctx->queue_tail < ctx->queue_size) {
-        ctx->event_queue[ctx->queue_tail++] = HARNESS_EVENT_VECTOR_CLASSIFIED;
-    }
-    return 0;
+    return harness_classify_vector(ctx, data, collection);
 }
 
 int harness_lua_honcho_store(harness_ctx_t* ctx, const char* key, const char* value) {
-    if (!ctx || !key || !value) return -1;
-    /* TODO: delegate to Honcho interface */
-    return 0;
+    return harness_honcho_store_memory(ctx, ctx ? ctx->acting_peer_id : NULL, key, value);
 }
 
 const char* harness_lua_honcho_retrieve(harness_ctx_t* ctx, const char* key) {
-    if (!ctx || !key) return NULL;
-    /* TODO: retrieve from Honcho */
-    return "stub-memory-value";
+    return harness_honcho_get_memory(ctx, ctx ? ctx->acting_peer_id : NULL, key);
 }
+
+/* harness_lua_init is defined in lua_bindings.c */

@@ -10,6 +10,7 @@
 **Documentation map** (progressive disclosure):
 - AGENTS.md (this file) — start here for every task
 - ARCHITECTURE.md — module boundaries, invariants, deliberate absences
+- TODO.md — living major work items (context builder, Honcho, pique, Lua, tests)
 - docs/README.md — full documentation index
 - docs/DOMAIN.md — AI harness domain glossary (Session, Model, Context, Response, tools, SOUL, pg_vector, Honcho)
 - docs/decisions/ — Architecture Decision Records (ADRs; see especially 002 for multi-party session model)
@@ -31,7 +32,7 @@
 - State machine and Lua integration remain pure (inputs → state/output only; Lua for policy).
 - Harness characteristics (tools, personality, loop criteria) are exercisable via Lua interface.
 
-**Current status**: Bootstrap phase. Core CMake, documentation scaffold, domain decision ADR 002 (session/model/context/response/Honcho), and skeleton for harness state machine + Lua binding stubs in place. Ready for iterative implementation of OpenAI processor, Honcho interface, libpique integration, pg_vector support, logging, multi-participant session APIs, and extension points.
+**Current status**: Bootstrap + ADR 002 public API alignment. Session/participant/message/SOUL/tools, stub context builder (identity prefix + secret redaction), response status parse, structured events, Honcho mirror hooks, Lua bind table when HAVE_LUA. See TODO.md for remaining full JSON/Honcho/pique/Lua work.
 
 **Testing, Fuzzing & Valgrind Policy** (see ADR 003):
 - Every change to core files must add or update tests in `tests/`.
@@ -39,21 +40,24 @@
 - All tests must pass under Valgrind with no leaks or memory errors.
 - Lua integration tests must cover dynamic tool/personality loading and loop criteria.
 
-**Current Interface Direction**:
-- Expose consistent C API with Lua bindings:
-  - `harness_config_t` (event_queue_size, lua_state, pique_ctx, honcho_ctx, etc.)
-  - `harness_create(role)` and `harness_create_with_config(role, config)`
-  - Lua-exposed functions for: enumerate_tools(), set_personality(), process_openai_request()/context build+response parse, should_loop(), log_interaction(), classify_with_vector(), session participant helpers, etc.
-  - Support for loading Lua scripts that define harness behavior and custom tools.
-  - Extension points via registration of C callbacks or Lua hooks (but core remains syscall-free).
-- Roles: HARNESS (main orchestrator), PROCESSOR (OpenAI compat), MEMORY (Honcho + PG).
-- Domain rules (ADR 002): identity-prefixed session messages; secrets as references for non-privileged peers; tool calls not mirrored to Honcho by default.
+**Current Interface Direction** (ADR 002):
+- Opaque `harness_ctx_t`; `harness_config_t` (event_queue_size, max_participants/messages/tools, workspace_id, session_id, acting_peer_id, pique_ctx, honcho_ctx, …)
+- `harness_create` / `harness_create_with_config` / destroy / reset
+- Session: `harness_session_set/get`, `harness_set_acting_peer`, participant add/get/count
+- Messages: append (+ tool result), identity prefix helper; SOUL set/get; tool register JSON
+- Context/response: `harness_context_build`, `harness_response_parse`, status/tool_call_count; feed_input → parse; get_output
+- Events: structured `harness_event_t` via `harness_next_event`
+- Honcho: attach, mirror_message (narrative only), store/get memory stubs
+- Lua: `harness_lua_init(ctx, void* L)` registers policy table when HAVE_LUA
+- Roles: MAIN, PROCESSOR, MEMORY
+- Domain rules: identity-prefixed session messages; secrets as references for non-privileged peers; tool calls not mirrored to Honcho by default
 
 **Known Limitations / Areas for Improvement**:
-- Initial skeleton only; full OpenAI context builder, response parser (JSON via libjsparse or sibling), multi-participant session plumbing, tool calling loop, pg_vector integration, Honcho C API wrapper to be implemented iteratively.
-- Lua 5.4 assumed; dynamic loading of sibling libs into Lua state needs design.
-- Vector classification for token reduction and personality storage pending libpique + pg_vector support.
-- Provider response shape variance (chat completions vs Responses API) still to normalize in processor.
+- Context/response JSON is stub-level (hand escape + substring parse); full libjsparse path and tool_calls round-trip still open — see TODO.md
+- Multi-participant session plumbing is in-memory only; pique/Honcho transports not wired
+- Lua 5.4 assumed; coroutine policy and full API bind incomplete
+- Vector classification / personality storage pending libpique + pg_vector
+- Provider response shape variance (chat completions vs Responses API) still to normalize in processor
 
 When making changes, prefer extending the event-driven path and Lua-exposed harness characteristics.
 
