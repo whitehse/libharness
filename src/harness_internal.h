@@ -8,17 +8,23 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define HARNESS_DEFAULT_QUEUE       64
+#define HARNESS_DEFAULT_QUEUE        64
 #define HARNESS_DEFAULT_PARTICIPANTS 32
 #define HARNESS_DEFAULT_MESSAGES    256
-#define HARNESS_DEFAULT_TOOLS       32
-#define HARNESS_PEER_ID_MAX         128
-#define HARNESS_CALL_ID_MAX         64
+#define HARNESS_DEFAULT_TOOLS        32
+#define HARNESS_DEFAULT_CONTEXT_CAP (64u * 1024u)
+#define HARNESS_PEER_ID_MAX         HARNESS_PEER_ID_CAP
+#define HARNESS_CALL_ID_MAX         HARNESS_CALL_ID_CAP
 #define HARNESS_MSG_CONTENT_MAX     4096
-#define HARNESS_TOOL_JSON_MAX       2048
+#define HARNESS_TOOL_JSON_MAX       4096
 #define HARNESS_SOUL_MAX            8192
 #define HARNESS_ID_MAX              128
 #define HARNESS_EXT_MAX             16
+#define HARNESS_MSG_TOOL_CALLS_MAX  8
+#define HARNESS_PARSED_TOOL_CALLS_MAX 16
+#define HARNESS_MEMORY_SLOTS        32
+#define HARNESS_MEMORY_KEY_MAX      64
+#define HARNESS_MEMORY_VAL_MAX     512
 
 typedef enum {
     HARNESS_STATE_INIT = 0,
@@ -36,7 +42,15 @@ typedef struct {
     char peer_id[HARNESS_PEER_ID_MAX];
     harness_participant_kind_t kind;
     bool privileged;
+    bool muted;
 } harness_participant_slot_t;
+
+typedef struct {
+    char id[HARNESS_CALL_ID_MAX];
+    char name[HARNESS_TOOL_NAME_CAP];
+    char arguments[HARNESS_TOOL_ARGS_CAP];
+    bool in_use;
+} harness_embedded_tool_call_t;
 
 typedef struct {
     char peer_id[HARNESS_PEER_ID_MAX];
@@ -44,13 +58,25 @@ typedef struct {
     harness_message_role_t role;
     char content[HARNESS_MSG_CONTENT_MAX];
     bool is_secret;
+    uint32_t secret_ref_id; /* stable across context rebuilds; 0 if not secret */
     bool in_use;
+    harness_embedded_tool_call_t tool_calls[HARNESS_MSG_TOOL_CALLS_MAX];
+    size_t tool_call_count;
 } harness_message_slot_t;
 
 typedef struct {
     char json[HARNESS_TOOL_JSON_MAX];
+    char name[HARNESS_TOOL_NAME_CAP];
+    harness_tool_type_t type;
     bool in_use;
 } harness_tool_slot_t;
+
+typedef struct {
+    char key[HARNESS_MEMORY_KEY_MAX];
+    char peer_id[HARNESS_PEER_ID_MAX];
+    char value[HARNESS_MEMORY_VAL_MAX];
+    bool in_use;
+} harness_memory_slot_t;
 
 struct harness_ctx {
     harness_role_t role;
@@ -60,6 +86,7 @@ struct harness_ctx {
     char workspace_id[HARNESS_ID_MAX];
     char session_id[HARNESS_ID_MAX];
     char acting_peer_id[HARNESS_PEER_ID_MAX];
+    bool session_retired;
 
     harness_participant_slot_t* participants;
     size_t participant_cap;
@@ -96,6 +123,11 @@ struct harness_ctx {
 
     harness_response_status_t last_response_status;
     size_t last_tool_call_count;
+    harness_tool_call_t parsed_tool_calls[HARNESS_PARSED_TOOL_CALLS_MAX];
+    harness_usage_t last_usage;
+    char last_assistant_text[HARNESS_ASSISTANT_TEXT_CAP];
+
+    harness_memory_slot_t memory[HARNESS_MEMORY_SLOTS];
 
     uint64_t interactions_logged;
     uint32_t secret_seq;
@@ -107,8 +139,16 @@ void harness_emit(harness_ctx_t* ctx, harness_event_type_t type,
 int harness_set_output(harness_ctx_t* ctx, const void* data, size_t len);
 const harness_participant_slot_t* harness_find_participant(const harness_ctx_t* ctx,
                                                           const char* peer_id);
+harness_participant_slot_t* harness_find_participant_mut(harness_ctx_t* ctx,
+                                                        const char* peer_id);
+int harness_ensure_message_slot(harness_ctx_t* ctx);
+void harness_copy_id(char* dst, size_t cap, const char* src);
 
-/* Module entry points implemented outside harness.c */
+/* JSON helpers used by openai + honcho modules */
+int harness_json_escape_append(char* dest, size_t cap, size_t* used, const char* src);
+int harness_json_append_raw(char* dest, size_t cap, size_t* used, const char* s);
+
+/* Module entry points */
 int harness_openai_context_build_impl(harness_ctx_t* ctx, const harness_context_params_t* params);
 int harness_openai_response_parse_impl(harness_ctx_t* ctx, const uint8_t* data, size_t len);
 

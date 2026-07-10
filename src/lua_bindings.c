@@ -77,6 +77,38 @@ static int l_honcho_mirror(lua_State* L) {
     return 1;
 }
 
+static int l_session_set(lua_State* L) {
+    harness_ctx_t* ctx = l_ctx(L);
+    const char* ws = luaL_checkstring(L, 1);
+    const char* sid = luaL_checkstring(L, 2);
+    lua_pushinteger(L, harness_session_set(ctx, ws, sid));
+    return 1;
+}
+
+static int l_response_parse(lua_State* L) {
+    harness_ctx_t* ctx = l_ctx(L);
+    size_t len = 0;
+    const char* data = luaL_checklstring(L, 1, &len);
+    lua_pushinteger(L, harness_response_parse(ctx, (const uint8_t*)data, len));
+    return 1;
+}
+
+static int l_log_interaction(lua_State* L) {
+    harness_ctx_t* ctx = l_ctx(L);
+    const char* model = luaL_checkstring(L, 1);
+    const char* prompt = luaL_optstring(L, 2, "");
+    const char* response = luaL_optstring(L, 3, "");
+    lua_pushinteger(L, harness_log_interaction(ctx, model, prompt, response));
+    return 1;
+}
+
+static int l_tool_register_json(lua_State* L) {
+    harness_ctx_t* ctx = l_ctx(L);
+    const char* json = luaL_checkstring(L, 1);
+    lua_pushinteger(L, harness_tool_register_json(ctx, json));
+    return 1;
+}
+
 static void register_fn(lua_State* L, harness_ctx_t* ctx, const char* name, lua_CFunction fn) {
     lua_pushlightuserdata(L, ctx);
     lua_pushcclosure(L, fn, 1);
@@ -95,6 +127,10 @@ static int harness_lua_bind(harness_ctx_t* ctx, lua_State* L) {
     register_fn(L, ctx, "message_append", l_message_append);
     register_fn(L, ctx, "context_build", l_context_build);
     register_fn(L, ctx, "honcho_mirror", l_honcho_mirror);
+    register_fn(L, ctx, "session_set", l_session_set);
+    register_fn(L, ctx, "response_parse", l_response_parse);
+    register_fn(L, ctx, "log_interaction", l_log_interaction);
+    register_fn(L, ctx, "tool_register_json", l_tool_register_json);
     lua_setglobal(L, "harness");
 
     if (ctx->config.lua_init_script && ctx->config.lua_init_script[0]) {

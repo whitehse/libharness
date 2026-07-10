@@ -62,6 +62,7 @@ int main(void) {
                                 "db_password=s3cret", true);
     assert(rc == 0);
     assert(harness_message_count(ctx) == 2);
+    assert(harness_message_secret_ref(ctx, 1) != 0);
 
     rc = harness_format_identity_prefix("human_alice", prefix, sizeof(prefix));
     assert(rc > 0);

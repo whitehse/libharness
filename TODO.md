@@ -1,59 +1,57 @@
 # libharness — Implementation TODO
 
-Current state (after ADR 002 interface alignment): bootstrap static library with
-session/participant/message/SOUL/tool registration, a **stub context builder**
-(identity prefix + secret redaction + tools JSON), lightweight response status
-detection, structured `harness_event_t` queue, Honcho mirror hook (no transport),
-Lua bind table when HAVE_LUA, smoke test + example. Builds under
+Current state (v0.2.0-todo-impl): multi-party session APIs, context builder with
+assistant `tool_calls[]` + stable secret refs + developer→system mapping,
+structured response parse (tool call list + usage + assistant text), C tool
+registration, session retire / participant lifecycle, Honcho request builder +
+mirror policy, dialectic + smoke tests. Builds under
 `-Wall -Wextra -Wpedantic -Werror`. Network, PG wire, and Honcho HTTP remain
 caller-owned (ADR 006).
 
-This document tracks remaining work. Domain vocabulary is fixed in
-**ADR 002** (`docs/decisions/002-session-model-context-and-honcho.md`) and
-`docs/DOMAIN.md`. Update this file when major items complete (sibling ADR 013).
+Domain vocabulary: **ADR 002**. Update this file when major items complete.
 
 ---
 
 ## High Priority: Context builder & response processor (ADR 002)
 
 ### 1.1  Full OpenAI-compatible context builder
-Stub emits minimal JSON (`model`, `temperature`, `messages`, optional `tools`)
-with identity prefixes and secret references. Remaining:
-  - Correct multi-part content arrays (text / image_url / refusal, etc.)
-  - Assistant messages carrying `tool_calls[]` (id, type, function.name, arguments string)
-  - `tool` role messages with `tool_call_id` fully round-tripped in build+parse
-  - `developer` role alias handling vs provider quirks
-  - Configurable max context bytes / truncation policy (Lua or config)
-  - Deterministic message ordering guarantees documented + tested
-  - Integration with libjsparse (or sibling JSON) instead of hand-rolled escape
+- [x] Identity prefixes + secret references (stable `secret_ref_id`)
+- [x] Assistant messages carrying `tool_calls[]` (id, type, function.name, arguments)
+- [x] `tool` role messages with `tool_call_id` round-tripped in build
+- [x] `developer` role → `system` when `map_developer_to_system` (default true)
+- [x] Configurable `max_context_bytes`
+- [x] Deterministic append-order messages (tested)
+- [ ] Multi-part content arrays (text / image_url / refusal, etc.)
+- [ ] Integration with a real JSON library if/when available (libjsparse is JS DOM, not JSON)
 
 Files: `src/openai_processor.c`, `include/harness.h`, tests
 
 ### 1.2  Full response parser / normalizer
-Current parse is substring heuristics (`requires_action`, `tool_calls`, `call_`).
-Remaining:
-  - Normalize Chat Completions vs Responses API vs Assistants-style payloads
-  - Populate structured tool-call list (id, name, arguments) accessible via C/Lua API
-  - Emit usage (`prompt_tokens`, `completion_tokens`, `total_tokens`) on events or getters
-  - Streaming chunk assembly path (caller feeds chunks; library aggregates) — optional
-  - Error / incomplete status events
+- [x] Chat Completions tool_calls extract + Responses-style `call_id`/`function_call` heuristics
+- [x] Structured tool-call list (`harness_response_tool_call_get`)
+- [x] Usage getters (`prompt_tokens` / `completion_tokens` / `total_tokens`)
+- [x] Assistant text getter
+- [x] Error / incomplete status events (basic)
+- [ ] Streaming chunk assembly path (optional)
+- [ ] Hardening: nested JSON arguments object (non-string) full re-serialize
 
 Files: `src/openai_processor.c`, `include/harness.h`, tests
 
 ### 1.3  Tool registry completeness
-  - Register tools from C structs (not only raw JSON strings)
-  - Support `function`, and opaque pass-through for `code_interpreter`, `file_search`, `web_search`
-  - Namespaced tool names (`python_interpreter:run_code`)
-  - Lua `register_tool(name, schema, fn)` executing in policy layer (no I/O in core)
-  - Enumerate tools as JSON array helper for callers
+- [x] Register tools from C structs (`harness_tool_register` / `harness_tool_def_t`)
+- [x] Opaque pass-through types (`code_interpreter`, `file_search`, `web_search`)
+- [x] Namespaced tool names allowed (string name as-is)
+- [x] Enumerate tools as JSON array (`harness_tools_to_json`)
+- [ ] Lua `register_tool(name, schema, fn)` with callable policy fn
 
 Files: `src/harness.c`, `src/lua_bindings.c`, `include/harness.h`
 
 ### 1.4  Secret / privilege redaction
-  - Stable secret reference ids across rebuilds of the same message
-  - Privilege matrix beyond single `privileged` bool (roles / capabilities)
-  - Policy hooks in Lua for custom redaction
-  - Ensure secrets never appear in Honcho mirror payloads or default PG log fields without explicit opt-in
+- [x] Stable secret reference ids across rebuilds
+- [x] Privileged vs non-privileged acting peer
+- [ ] Privilege matrix beyond single `privileged` bool
+- [ ] Lua custom redaction hooks
+- [ ] PG log field redaction policy
 
 Files: `src/openai_processor.c`, `src/lua_bindings.c`, `src/honcho_interface.c`
 
@@ -62,23 +60,24 @@ Files: `src/openai_processor.c`, `src/lua_bindings.c`, `src/honcho_interface.c`
 ## High Priority: Session & participant plumbing
 
 ### 2.1  Durable session identity
-  - Persist session/workspace ids via pique when available
-  - Session “lives forever” retirement API (`harness_session_retire`) for app policy
-  - Multi-session handle model vs single session per `harness_ctx_t` (decide + ADR if multi)
+- [x] `harness_session_retire` + `harness_session_is_retired` (blocks appends)
+- [ ] Persist session/workspace ids via pique when available
+- [ ] Multi-session handle model vs single session per ctx (decide + ADR if multi)
 
 Files: `src/harness.c`, `src/pique_integration.c`
 
 ### 2.2  Participant lifecycle
-  - Remove / mute / privilege-change APIs
-  - Kind-specific defaults (agent vs human SOUL attachment)
-  - Map participants 1:1 with Honcho peer ids in integration tests
+- [x] Remove / privilege-change APIs
+- [ ] Mute API wired into context build (slot has `muted` unused)
+- [ ] Kind-specific SOUL defaults
+- [ ] Honcho peer id integration tests with live Honcho (optional)
 
 Files: `include/harness.h`, `src/harness.c`
 
 ### 2.3  Message history management
-  - Ring buffer / max_messages eviction policy for token control
-  - Import/export history as JSON for dialectic tests
-  - Vector-assisted compression hooks (`harness_classify_vector` → drop/summarize)
+- [x] Drop-oldest when `drop_oldest_messages` and cap hit
+- [ ] Import/export history as JSON for dialectic tests
+- [ ] Vector-assisted compression hooks
 
 Files: `src/harness.c`, `src/pique_integration.c`
 
@@ -87,41 +86,41 @@ Files: `src/harness.c`, `src/pique_integration.c`
 ## High Priority: Honcho join (optional provider)
 
 ### 3.1  Honcho client plumbing (caller-fed)
-  - Buffer-level request builder for peer messages (workspace/session/peer_id/content/metadata)
-  - Parse Honcho responses into events (no sockets in core)
-  - Document curl/HTTP examples only in docs/examples (not core)
+- [x] Buffer-level request builder (`harness_honcho_build_messages_request`)
+- [ ] Parse Honcho responses into events
+- [ ] Document curl/HTTP examples in docs/examples
 
 Files: `src/honcho_interface.c`, `include/harness.h`, examples
 
 ### 3.2  Mirror policy
-  - Default: **do not** mirror tool calls (enforced with type/role checks)
-  - Mirror user/assistant narrative with peer_id
-  - Metadata conventions (`chat_message`, `agent_response`, model name)
-  - Lua policy: `should_mirror(message) → bool`
+- [x] Default: do not mirror tool-call-like payloads
+- [x] Narrative mirror event
+- [ ] Metadata conventions helpers (typed builders)
+- [ ] Lua `should_mirror(message) → bool`
 
 Files: `src/honcho_interface.c`, `src/lua_bindings.c`
 
 ### 3.3  Memory facts API
-  - Replace stub `harness_honcho_get_memory` with real peer-card / conclusion surfaces
-  - Align naming with Honcho peer/session/message model (ADR 002 table)
+- [x] In-process key/value store per peer (stub until real Honcho)
+- [ ] Peer-card / conclusion surfaces against live Honcho API shapes
 
-Files: `src/honcho_interface.c`
+Files: `src/honcho_interface.c`, `src/harness.c`
 
 ---
 
 ## Medium Priority: PostgreSQL / pg_vector (libpique)
 
 ### 4.1  Interaction logging
-  - INSERT path via pique event/feed API for every model interaction
-  - Store model, context hash/blob, response, usage, session_id, acting_peer_id, timestamps
-  - Dialectic test with fake pique buffers if possible
+- [ ] INSERT path via pique event/feed API
+- [ ] Store model, context, response, usage, session_id, acting_peer_id
+- [ ] Dialectic test with fake pique buffers
 
 Files: `src/pique_integration.c`, tests
 
 ### 4.2  Vector classification & personality storage
-  - Embeddings storage + similarity search for SOUL/personality
-  - Token-reduction classifier for history compression
-  - Graceful no-op when libpique not linked (current warning path)
+- [ ] Embeddings + similarity search for SOUL
+- [ ] Token-reduction classifier
+- [x] Graceful no-op when libpique not linked
 
 Files: `src/pique_integration.c`
 
@@ -130,15 +129,17 @@ Files: `src/pique_integration.c`
 ## Medium Priority: Lua policy surface
 
 ### 5.1  Complete `harness` Lua table
-  - Bind all ADR 002 C APIs (session, tools, response parse, log, classify)
-  - Coroutine-friendly yield points at event boundaries (sibling ADR 014 style)
-  - Load scripts from memory/PG rather than `luaL_dofile` path default
+- [x] Expanded binds: session_set, response_parse, log_interaction, tool_register_json, …
+- [ ] Bind remaining ADR 002 APIs
+- [ ] Coroutine-friendly yield points
+- [ ] Load scripts from memory/PG rather than path
 
 Files: `src/lua_bindings.c`
 
 ### 5.2  Loop criteria
-  - Real evaluation of Lua expressions / registered criteria functions
-  - Events carry loop decision reason codes
+- [x] Simple string criteria (`false`/`0`/`never` stop)
+- [ ] Real Lua expression / registered criteria functions
+- [x] Events carry loop decision code (0/1)
 
 Files: `src/harness.c`, `src/lua_bindings.c`
 
@@ -147,76 +148,65 @@ Files: `src/harness.c`, `src/lua_bindings.c`
 ## Medium Priority: Events, config, interfaces (ADR 010)
 
 ### 6.1  Event queue robustness
-  - Backpressure policy (block vs drop vs compact) configurable
-  - Richer event payloads without breaking FFI (side tables / getters by index)
-  - `harness_event_type_name()` for debugging
+- [x] `harness_event_type_name()`
+- [x] Backpressure: drop new vs drop oldest (`event_backpressure`)
+- [ ] Richer event payloads / side tables
 
 Files: `include/harness.h`, `src/harness.c`
 
 ### 6.2  Expand `harness_config_t`
-  - caps already present (queue, participants, messages, tools)
-  - flags: `no_identity_prefix_default`, `mirror_tool_calls` (default false), `strict_json`
-  - optional fixed output buffer supplied by caller (zero library realloc)
+- [x] caps + `max_context_bytes`
+- [x] flags: `no_identity_prefix_default`, `mirror_tool_calls`, `map_developer_to_system`, `drop_oldest_messages`
+- [ ] optional fixed output buffer supplied by caller
 
 Files: `include/harness.h`, `src/harness.c`
 
 ### 6.3  Remove remaining bootstrap coupling
-  - Deprecate timeline for `harness_lua_*` compatibility wrappers
-  - Ensure all public headers remain FFI-friendly (no bitfields/macros required)
-
-Files: `include/harness.h`, docs
+- [ ] Deprecate timeline for `harness_lua_*` wrappers
+- [x] Public headers remain FFI-friendly
 
 ---
 
 ## Lower Priority: Testing, fuzzing, examples, docs
 
-### 7.1  Dialectic-style tests (ADR 003/004 spirit)
-  - Multi-participant context build golden JSON tests
-  - Secret redaction matrix (privileged vs not)
-  - requires_action → tool result → completed loop without network
-  - Honcho mirror exclusion of tool payloads
+### 7.1  Dialectic-style tests
+- [x] Multi-participant context build + redaction matrix
+- [x] requires_action → tool result → completed (no network)
+- [x] Honcho mirror exclusion of tool payloads
+- [x] Buffer handoff between two harness contexts
 
-Files: `tests/`
+Files: `tests/test_dialectic_session.c`
 
 ### 7.2  Fuzz targets
-  - `fuzz_harness` for response_parse and context message content
-  - Enable under `ENABLE_FUZZ`
-
-Files: `tests/fuzz_harness.c`, CMake
+- [ ] `fuzz_harness` for response_parse and context message content
 
 ### 7.3  Valgrind clean
-  - Ensure create/destroy and long message sequences show no leaks
+- [ ] Explicit Valgrind job for long sequences
 
 ### 7.4  Examples
-  - Multi-agent dialectic example (two harness ctx exchanging narrative)
-  - Example wiring notes for librest/shaggy transport (docs only)
-
-Files: `examples/`
+- [ ] Multi-agent dialectic example binary
+- [ ] librest/shaggy transport wiring notes
 
 ### 7.5  Documentation
-  - Manpages if/when project adopts sibling manpage policy (ADR 007)
-  - Keep AGENTS.md / ARCHITECTURE.md / DOMAIN.md in sync when APIs land
-  - Consider adopting full common ADR set (002 event-loop, 003 testing, …) from shaggy
-
-Files: `docs/`, `AGENTS.md`, `ARCHITECTURE.md`
+- [ ] Keep AGENTS/ARCHITECTURE/DOMAIN in sync (partially done)
+- [ ] Consider full common ADR set from shaggy
 
 ---
 
-## Interface change log (ADR 002 alignment — done in tree)
+## Interface change log
 
-Public surface now includes (stubs unless noted):
-- [x] `harness_config_t` with workspace/session/acting_peer + caps
-- [x] Structured `harness_event_t` + expanded event types
-- [x] Session set/get, acting peer, participant add/get/count
-- [x] Message append (+ tool result), message count, identity prefix helper
-- [x] SOUL set/get, tool register JSON / clear / count / enumerate
-- [x] `harness_context_build` + `harness_context_params_t`
-- [x] `harness_response_parse` / status / tool_call_count; `feed_input` → parse
-- [x] Honcho attach / mirror_message / store+get memory stubs
-- [x] Log + classify hooks; should_loop; extension register
-- [x] Internal `src/harness_internal.h` shared by modules
-- [x] Smoke test covering multi-party context + redaction + requires_action
-- [x] Example building a session context
+### ADR 002 alignment (earlier)
+- [x] Session/participant/message/SOUL/tools, context_build, response_parse stubs, events
+
+### TODO implementation batch (this work)
+- [x] Assistant tool_calls in history + context JSON
+- [x] Structured response tool_calls + usage + assistant text
+- [x] `harness_tool_register` / `harness_tools_to_json`
+- [x] Stable secret refs; developer→system mapping; max_context_bytes
+- [x] Session retire; participant remove/set_privileged; drop-oldest messages
+- [x] Honcho build request + mirror tool rejection; in-process memory slots
+- [x] Config flags + event_backpressure + event type names
+- [x] Dialectic test target
 
 ---
 
