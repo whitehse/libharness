@@ -32,7 +32,8 @@
 - State machine and Lua integration remain pure (inputs → state/output only; Lua for policy).
 - Harness characteristics (tools, personality, loop criteria) are exercisable via Lua interface.
 
-**Current status**: v0.4.0-todo-impl — capability matrix, kind SOUL, history compress, pique SQL builders, Lua register_tool/loop/mirror hooks, Honcho peer-card builders, ADR 003 single-session. See TODO.md.
+**Current status**: v0.6.0-todo-impl — pique feed/embed/similarity TSV events,
+optional HAVE_PIQUE (pqwire) submit_staged, Lua wait_event/poll_until. See TODO.md.
 
 **Testing, Fuzzing & Valgrind Policy** (see ADR 003):
 - Every change to core files must add or update tests in `tests/`.
@@ -53,10 +54,10 @@
 - Domain rules: identity-prefixed session messages; secrets as references for non-privileged peers; tool calls not mirrored to Honcho by default
 
 **Known Limitations / Areas for Improvement**:
-- Context/response JSON is stub-level (hand escape + substring parse); full libjsparse path and tool_calls round-trip still open — see TODO.md
-- Multi-participant session plumbing is in-memory only; pique/Honcho transports not wired
-- Lua 5.4 assumed; coroutine policy and full API bind incomplete
-- Vector classification / personality storage pending libpique + pg_vector
+- Context/response JSON is hand-escaped substring parse; real JSON library optional
+- Multi-participant session plumbing is in-memory; live pique/Honcho I/O is caller-owned
+- Lua 5.4 assumed; higher-level coroutine yield helpers optional
+- Live embedding scoring / personality search needs linked libpique + pg_vector
 - Provider response shape variance (chat completions vs Responses API) still to normalize in processor
 
 When making changes, prefer extending the event-driven path and Lua-exposed harness characteristics.

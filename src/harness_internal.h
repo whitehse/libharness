@@ -162,6 +162,9 @@ struct harness_ctx {
 
 void harness_emit(harness_ctx_t* ctx, harness_event_type_t type,
                   const char* peer_id, const char* call_id, int code, size_t index);
+void harness_emit_ex(harness_ctx_t* ctx, harness_event_type_t type,
+                     const char* peer_id, const char* call_id, int code, size_t index,
+                     const char* detail);
 int harness_set_output(harness_ctx_t* ctx, const void* data, size_t len);
 const harness_participant_slot_t* harness_find_participant(const harness_ctx_t* ctx,
                                                           const char* peer_id);

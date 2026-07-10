@@ -57,8 +57,9 @@ int harness_json_append_raw(char* dest, size_t cap, size_t* used, const char* s)
     return 0;
 }
 
-void harness_emit(harness_ctx_t* ctx, harness_event_type_t type,
-                  const char* peer_id, const char* call_id, int code, size_t index) {
+void harness_emit_ex(harness_ctx_t* ctx, harness_event_type_t type,
+                     const char* peer_id, const char* call_id, int code, size_t index,
+                     const char* detail) {
     harness_event_t* ev;
     if (!ctx || ctx->state == HARNESS_STATE_DESTROYED) return;
     if (ctx->queue_tail >= ctx->queue_size) {
@@ -81,6 +82,13 @@ void harness_emit(harness_ctx_t* ctx, harness_event_type_t type,
     harness_copy_id(ev->call_id, sizeof(ev->call_id), call_id);
     ev->code = code;
     ev->index = index;
+    if (detail && detail[0])
+        harness_copy_id(ev->detail, sizeof(ev->detail), detail);
+}
+
+void harness_emit(harness_ctx_t* ctx, harness_event_type_t type,
+                  const char* peer_id, const char* call_id, int code, size_t index) {
+    harness_emit_ex(ctx, type, peer_id, call_id, code, index, NULL);
 }
 
 int harness_set_output(harness_ctx_t* ctx, const void* data, size_t len) {
@@ -153,6 +161,7 @@ void harness_config_init_defaults(harness_config_t* config) {
     config->mirror_tool_calls = false;
     config->no_identity_prefix_default = false;
     config->drop_oldest_messages = false;
+    config->redact_secrets_in_log = true;
     config->event_backpressure = HARNESS_BACKPRESSURE_DROP;
 }
 
@@ -668,6 +677,9 @@ const char* harness_event_type_name(harness_event_type_t type) {
     case HARNESS_EVENT_STREAM_FINISHED: return "stream_finished";
     case HARNESS_EVENT_PARTICIPANT_MUTED: return "participant_muted";
     case HARNESS_EVENT_HISTORY_COMPRESSED: return "history_compressed";
+    case HARNESS_EVENT_PIQUE_SQL_READY: return "pique_sql_ready";
+    case HARNESS_EVENT_PIQUE_FEED_STAGED: return "pique_feed_staged";
+    case HARNESS_EVENT_VECTOR_HIT: return "vector_hit";
     case HARNESS_EVENT_EXTENSION_CALLED: return "extension_called";
     case HARNESS_EVENT_ERROR: return "error";
     default: return "unknown";
@@ -777,7 +789,7 @@ int harness_register_extension(harness_ctx_t* ctx, const char* name, harness_ext
 }
 
 const char* harness_version(void) {
-    return "0.4.0-todo-impl";
+    return "0.6.0-todo-impl";
 }
 
 /* ---- Compatibility wrappers ---- */

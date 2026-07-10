@@ -10,3 +10,4 @@ ADRs in docs/decisions/:
 - 002-session-model-context-and-honcho.md — multi-party session domain model and Honcho join
 - 003-single-session-per-context.md — one session per harness_ctx_t
 - docs/honcho-transport-notes.md — caller-owned Honcho HTTP notes
+- docs/pique-transport-notes.md — caller-owned libpique SQL feed notes

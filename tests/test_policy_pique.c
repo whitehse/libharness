@@ -66,6 +66,83 @@ int main(void) {
     assert(strstr(sql, "harness_sessions") != NULL);
     printf("  pique SQL builders: OK\n");
 
+    /* Secret in history; feed_log must redact into staged SQL */
+    assert(harness_message_append(ctx, "human_a", HARNESS_MSG_USER, "super-secret-token", true) == 0);
+    assert(harness_pique_feed_log(ctx, "gpt", "prompt has super-secret-token inside", "ok") == 0);
+    assert(harness_get_output(ctx, out, sizeof(out) - 1, &out_len) == 0);
+    out[out_len] = '\0';
+    assert(strstr((char*)out, "super-secret-token") == NULL);
+    assert(strstr((char*)out, "secret_ref") != NULL);
+    assert(harness_pique_feed_session(ctx) == 0);
+    assert(harness_get_output(ctx, out, sizeof(out) - 1, &out_len) == 0);
+    out[out_len] = '\0';
+    assert(strstr((char*)out, "harness_sessions") != NULL);
+    {
+        harness_event_t ev;
+        int saw_sql = 0;
+        int saw_feed = 0;
+        while (harness_next_event(ctx, &ev) == 0 && ev.type != HARNESS_EVENT_NONE) {
+            if (ev.type == HARNESS_EVENT_PIQUE_SQL_READY) saw_sql = 1;
+            if (ev.type == HARNESS_EVENT_PIQUE_FEED_STAGED) {
+                saw_feed = 1;
+                assert(ev.detail[0] != '\0');
+            }
+        }
+        assert(saw_sql && saw_feed);
+    }
+    printf("  pique feed + log redaction + event detail: OK\n");
+
+    assert(harness_pique_build_embedding_insert(ctx, "soul", "hello",
+        "'[0.1,0.2]'::vector", sql, sizeof(sql), &n) == 0);
+    assert(strstr(sql, "harness_embeddings") != NULL);
+    assert(harness_pique_build_similarity_search(ctx, "soul", "'[0.1,0.2]'::vector",
+        5, sql, sizeof(sql), &n) == 0);
+    assert(strstr(sql, "ORDER BY") != NULL);
+    {
+        uint8_t keep[16];
+        size_t mc = harness_message_count(ctx);
+        size_t i;
+        assert(mc <= sizeof(keep));
+        for (i = 0; i < mc; i++) keep[i] = (i == mc - 1) ? 1 : 0;
+        assert(harness_history_compress_select(ctx, keep, mc) == 0);
+        assert(harness_message_count(ctx) == 1);
+    }
+    printf("  vector SQL + compress_select: OK\n");
+
+    assert(harness_pique_feed_embedding(ctx, "soul", "hello body",
+                                        "'[0.1,0.2]'::vector") == 0);
+    assert(harness_get_output(ctx, out, sizeof(out) - 1, &out_len) == 0);
+    out[out_len] = '\0';
+    assert(strstr((char*)out, "harness_embeddings") != NULL);
+    assert(harness_pique_feed_similarity(ctx, "soul", "'[0.1,0.2]'::vector", 3) == 0);
+    assert(harness_get_output(ctx, out, sizeof(out) - 1, &out_len) == 0);
+    out[out_len] = '\0';
+    assert(strstr((char*)out, "ORDER BY") != NULL);
+    {
+        const char* tsv = "0.95\tAgent defaults\n"
+                          "0.40|12|older noise\n"
+                          "# comment\n"
+                          "0.11\t\n";
+        harness_event_t ev;
+        int hits = 0;
+        int classified = 0;
+        int n_rows = harness_pique_parse_similarity_tsv(ctx, tsv, 0);
+        assert(n_rows >= 2);
+        while (harness_next_event(ctx, &ev) == 0 && ev.type != HARNESS_EVENT_NONE) {
+            if (ev.type == HARNESS_EVENT_VECTOR_HIT) {
+                hits++;
+                assert(ev.detail[0] != '\0');
+            }
+            if (ev.type == HARNESS_EVENT_VECTOR_CLASSIFIED &&
+                strcmp(ev.detail, "similarity_tsv") == 0)
+                classified = 1;
+        }
+        assert(hits >= 2 && classified);
+    }
+    /* No pique handle attached → submit returns error, SQL remains staged. */
+    assert(harness_pique_submit_staged(ctx) == -1);
+    printf("  feed_embedding/similarity + parse tsv: OK\n");
+
     assert(harness_honcho_build_peer_card_request(ctx, "human_a", card, sizeof(card), &n) == 0);
     assert(strstr(card, "get_peer_card") != NULL);
     assert(harness_honcho_build_conclude_request(ctx, "human_a", "likes brevity",
@@ -91,7 +168,16 @@ int main(void) {
         "harness.set_loop_criterion(function(c) return c == 'go' end)\n", 0) == 0);
     assert(harness_should_loop(ctx, "go") == true);
     assert(harness_should_loop(ctx, "stop") == false);
-    printf("  lua register_tool + mirror/loop policy: OK\n");
+    assert(harness_lua_load_script(ctx,
+        "local e = harness.next_event()\n"
+        "assert(e == nil or type(e) == 'table')\n"
+        "local d = harness.drain_events()\n"
+        "assert(type(d) == 'table')\n"
+        "local we, why = harness.wait_event()\n"
+        "assert(we == nil and why == 'would_yield')\n"
+        "assert(type(harness.pique_feed_embedding) == 'function')\n"
+        "assert(type(harness.poll_until) == 'function')\n", 0) == 0);
+    printf("  lua register_tool + mirror/loop + event poll + yield helpers: OK\n");
 
     lua_close(L);
     harness_destroy(ctx);

@@ -195,6 +195,188 @@ static int l_invoke_tool(lua_State* L) {
     return 1;
 }
 
+/* next_event() -> table {type, peer_id, call_id, code, index, detail} or nil if none.
+ * Coroutine-friendly: policy coroutines can yield when type is "none". */
+static int l_next_event(lua_State* L) {
+    harness_event_t ev;
+    if (harness_next_event(l_ctx(L), &ev) != 0) {
+        lua_pushnil(L);
+        return 1;
+    }
+    if (ev.type == HARNESS_EVENT_NONE) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_createtable(L, 0, 6);
+    lua_pushstring(L, harness_event_type_name(ev.type));
+    lua_setfield(L, -2, "type");
+    lua_pushstring(L, ev.peer_id);
+    lua_setfield(L, -2, "peer_id");
+    lua_pushstring(L, ev.call_id);
+    lua_setfield(L, -2, "call_id");
+    lua_pushinteger(L, ev.code);
+    lua_setfield(L, -2, "code");
+    lua_pushinteger(L, (lua_Integer)ev.index);
+    lua_setfield(L, -2, "index");
+    lua_pushstring(L, ev.detail);
+    lua_setfield(L, -2, "detail");
+    return 1;
+}
+
+/* drain_events() -> array of event tables (empty table if none). */
+static int l_drain_events(lua_State* L) {
+    harness_ctx_t* ctx = l_ctx(L);
+    int n = 0;
+    lua_newtable(L);
+    for (;;) {
+        harness_event_t ev;
+        if (harness_next_event(ctx, &ev) != 0) break;
+        if (ev.type == HARNESS_EVENT_NONE) break;
+        n++;
+        lua_createtable(L, 0, 6);
+        lua_pushstring(L, harness_event_type_name(ev.type));
+        lua_setfield(L, -2, "type");
+        lua_pushstring(L, ev.peer_id);
+        lua_setfield(L, -2, "peer_id");
+        lua_pushstring(L, ev.call_id);
+        lua_setfield(L, -2, "call_id");
+        lua_pushinteger(L, ev.code);
+        lua_setfield(L, -2, "code");
+        lua_pushinteger(L, (lua_Integer)ev.index);
+        lua_setfield(L, -2, "index");
+        lua_pushstring(L, ev.detail);
+        lua_setfield(L, -2, "detail");
+        lua_rawseti(L, -2, n);
+    }
+    return 1;
+}
+
+static int l_pique_feed_session(lua_State* L) {
+    lua_pushinteger(L, harness_pique_feed_session(l_ctx(L)));
+    return 1;
+}
+
+static int l_pique_feed_log(lua_State* L) {
+    lua_pushinteger(L, harness_pique_feed_log(l_ctx(L),
+                                              luaL_checkstring(L, 1),
+                                              luaL_optstring(L, 2, ""),
+                                              luaL_optstring(L, 3, "")));
+    return 1;
+}
+
+static int l_pique_feed_embedding(lua_State* L) {
+    lua_pushinteger(L, harness_pique_feed_embedding(l_ctx(L),
+                                                    luaL_checkstring(L, 1),
+                                                    luaL_checkstring(L, 2),
+                                                    luaL_checkstring(L, 3)));
+    return 1;
+}
+
+static int l_pique_feed_similarity(lua_State* L) {
+    lua_pushinteger(L, harness_pique_feed_similarity(l_ctx(L),
+                                                     luaL_checkstring(L, 1),
+                                                     luaL_checkstring(L, 2),
+                                                     (size_t)luaL_optinteger(L, 3, 8)));
+    return 1;
+}
+
+static int l_pique_parse_similarity_tsv(lua_State* L) {
+    size_t len = 0;
+    const char* data = luaL_checklstring(L, 1, &len);
+    lua_pushinteger(L, harness_pique_parse_similarity_tsv(l_ctx(L), data, len));
+    return 1;
+}
+
+static int l_history_compress_select(lua_State* L) {
+    /* history_compress_select(keep_table) — keep_table[i]=truthy keeps message i (1-based). */
+    harness_ctx_t* ctx = l_ctx(L);
+    size_t mc;
+    size_t i;
+    uint8_t* mask;
+    int rc;
+    luaL_checktype(L, 1, LUA_TTABLE);
+    mc = harness_message_count(ctx);
+    mask = (uint8_t*)malloc(mc ? mc : 1);
+    if (!mask) {
+        lua_pushinteger(L, -1);
+        return 1;
+    }
+    for (i = 0; i < mc; i++) {
+        lua_rawgeti(L, 1, (lua_Integer)(i + 1));
+        mask[i] = lua_toboolean(L, -1) ? 1 : 0;
+        lua_pop(L, 1);
+    }
+    rc = harness_history_compress_select(ctx, mask, mc);
+    free(mask);
+    lua_pushinteger(L, rc);
+    return 1;
+}
+
+/* Install optional yield helpers on the global table after bind:
+ * wait_event() — poll next; if none, hold a sentinel so coroutines can yield.
+ * poll_until(type_name?) — drain until matching type (or any event) or nil.
+ * Higher-level Lua helpers always use coroutine.yield(nil) when empty so apps
+ * can wrap: while true do local e = harness.wait_event() if e then ... else
+ * coroutine.yield() end end
+ */
+static int l_wait_event(lua_State* L) {
+    harness_event_t ev;
+    if (harness_next_event(l_ctx(L), &ev) != 0 || ev.type == HARNESS_EVENT_NONE) {
+        lua_pushnil(L);
+        lua_pushstring(L, "would_yield");
+        return 2;
+    }
+    lua_createtable(L, 0, 6);
+    lua_pushstring(L, harness_event_type_name(ev.type));
+    lua_setfield(L, -2, "type");
+    lua_pushstring(L, ev.peer_id);
+    lua_setfield(L, -2, "peer_id");
+    lua_pushstring(L, ev.call_id);
+    lua_setfield(L, -2, "call_id");
+    lua_pushinteger(L, ev.code);
+    lua_setfield(L, -2, "code");
+    lua_pushinteger(L, (lua_Integer)ev.index);
+    lua_setfield(L, -2, "index");
+    lua_pushstring(L, ev.detail);
+    lua_setfield(L, -2, "detail");
+    return 1;
+}
+
+static int l_poll_until(lua_State* L) {
+    const char* want = luaL_optstring(L, 1, NULL);
+    int limit = (int)luaL_optinteger(L, 2, 64);
+    int n = 0;
+    while (n < limit) {
+        harness_event_t ev;
+        if (harness_next_event(l_ctx(L), &ev) != 0 || ev.type == HARNESS_EVENT_NONE) {
+            lua_pushnil(L);
+            lua_pushstring(L, "would_yield");
+            return 2;
+        }
+        n++;
+        if (!want || want[0] == '\0' ||
+            strcmp(harness_event_type_name(ev.type), want) == 0) {
+            lua_createtable(L, 0, 6);
+            lua_pushstring(L, harness_event_type_name(ev.type));
+            lua_setfield(L, -2, "type");
+            lua_pushstring(L, ev.peer_id);
+            lua_setfield(L, -2, "peer_id");
+            lua_pushstring(L, ev.call_id);
+            lua_setfield(L, -2, "call_id");
+            lua_pushinteger(L, ev.code);
+            lua_setfield(L, -2, "code");
+            lua_pushinteger(L, (lua_Integer)ev.index);
+            lua_setfield(L, -2, "index");
+            lua_pushstring(L, ev.detail);
+            lua_setfield(L, -2, "detail");
+            return 1;
+        }
+    }
+    lua_pushnil(L);
+    lua_pushstring(L, "limit");
+    return 2;
+}
+
 static void register_fn(lua_State* L, harness_ctx_t* ctx, const char* name, lua_CFunction fn) {
     lua_pushlightuserdata(L, ctx);
     lua_pushcclosure(L, fn, 1);
@@ -226,6 +408,16 @@ static int harness_lua_bind(harness_ctx_t* ctx, lua_State* L) {
     register_fn(L, ctx, "history_compress", l_history_compress);
     register_fn(L, ctx, "set_capabilities", l_set_capabilities);
     register_fn(L, ctx, "soul_for_kind", l_soul_for_kind);
+    register_fn(L, ctx, "next_event", l_next_event);
+    register_fn(L, ctx, "drain_events", l_drain_events);
+    register_fn(L, ctx, "wait_event", l_wait_event);
+    register_fn(L, ctx, "poll_until", l_poll_until);
+    register_fn(L, ctx, "pique_feed_session", l_pique_feed_session);
+    register_fn(L, ctx, "pique_feed_log", l_pique_feed_log);
+    register_fn(L, ctx, "pique_feed_embedding", l_pique_feed_embedding);
+    register_fn(L, ctx, "pique_feed_similarity", l_pique_feed_similarity);
+    register_fn(L, ctx, "pique_parse_similarity_tsv", l_pique_parse_similarity_tsv);
+    register_fn(L, ctx, "history_compress_select", l_history_compress_select);
     lua_setglobal(L, "harness");
 
     if (ctx->config.lua_init_script && ctx->config.lua_init_script[0]) {

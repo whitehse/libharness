@@ -107,3 +107,17 @@ SEE_SECRETS (+ common agent defaults on add). Secret redaction uses
 
 Kind-specific SOUL text (`harness_soul_set_for_kind`) is injected as an extra
 system message when the acting peer matches that kind.
+
+## Pique feed path (v0.5–v0.6)
+
+SQL for session upsert, interaction log, embeddings, and similarity search is
+built in-process and staged via `harness_pique_feed_*` → `get_output`. Default
+`redact_secrets_in_log` replaces secret message text with `[secret_ref:N]` in
+log INSERT bodies. Embedding-assisted history reduction uses caller scores +
+`harness_history_compress_select`.
+
+Caller-fetched similarity results can be fed back as score/text lines with
+`harness_pique_parse_similarity_tsv` (emits `vector_hit` + summary
+`vector_classified`). When built with `HAVE_PIQUE` and `config.pique_ctx` is a
+pqwire client, `harness_pique_submit_staged` queues the staged SQL via
+`pqwire_send_query` (still buffer-only; sockets remain caller-owned).

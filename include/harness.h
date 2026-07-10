@@ -26,6 +26,7 @@ typedef struct harness_ctx harness_ctx_t;
 #define HARNESS_TOOL_NAME_CAP     128
 #define HARNESS_TOOL_ARGS_CAP    2048
 #define HARNESS_ASSISTANT_TEXT_CAP 4096
+#define HARNESS_EVENT_DETAIL_CAP  128
 
 /* -------------------------------------------------------------------------
  * Instance role (which face of the library this ctx primarily serves)
@@ -111,6 +112,9 @@ typedef enum {
     HARNESS_EVENT_STREAM_FINISHED,
     HARNESS_EVENT_PARTICIPANT_MUTED,
     HARNESS_EVENT_HISTORY_COMPRESSED,
+    HARNESS_EVENT_PIQUE_SQL_READY,   /* SQL staged in get_output for caller → libpique */
+    HARNESS_EVENT_PIQUE_FEED_STAGED, /* feed path completed (log/session/vector) */
+    HARNESS_EVENT_VECTOR_HIT,        /* one similarity/search row (detail=text; code≈score*1000) */
     HARNESS_EVENT_EXTENSION_CALLED,
     HARNESS_EVENT_ERROR
 } harness_event_type_t;
@@ -121,6 +125,8 @@ typedef struct harness_event {
     char call_id[HARNESS_CALL_ID_CAP];
     int code;
     size_t index;
+    /* Optional short detail (SQL kind, error text, collection name, …). */
+    char detail[HARNESS_EVENT_DETAIL_CAP];
 } harness_event_t;
 
 /* Parsed tool call from a provider response */
@@ -186,6 +192,7 @@ typedef struct {
     bool mirror_tool_calls;          /* default false — ADR 002 */
     bool map_developer_to_system;    /* default true — provider quirk */
     bool drop_oldest_messages;       /* ring-buffer when message cap hit */
+    bool redact_secrets_in_log;      /* default true — PG log SQL redaction */
     harness_backpressure_t event_backpressure;
 
     /* Optional caller-owned output buffer (no library realloc when set) */
@@ -312,6 +319,12 @@ int harness_history_import_json(harness_ctx_t* ctx, const char* json, size_t len
 /* Drop oldest compressible messages until count <= keep_last (tool results kept longer). */
 int harness_history_compress(harness_ctx_t* ctx, size_t keep_last);
 
+/* Caller-supplied keep mask (1 = keep). Length must equal message_count.
+ * Used after embedding/similarity scoring outside the library (pg_vector). */
+int harness_history_compress_select(harness_ctx_t* ctx,
+                                    const uint8_t* keep_mask,
+                                    size_t mask_len);
+
 /* Format identity prefix into buf, e.g. "[human_alice]". Returns bytes needed
  * (excluding NUL) or -1 on error. Truncates if buflen too small. */
 int harness_format_identity_prefix(const char* peer_id, char* buf, size_t buflen);
@@ -420,6 +433,66 @@ int harness_pique_build_session_upsert(const harness_ctx_t* ctx,
                                        char* buf,
                                        size_t cap,
                                        size_t* out_len);
+
+/* Embedding / similarity SQL builders (vector column as caller-provided literal,
+ * e.g. \"'[0.1,0.2,...]'::vector\" — library never talks to PG). */
+int harness_pique_build_embedding_insert(const harness_ctx_t* ctx,
+                                         const char* collection,
+                                         const char* text,
+                                         const char* embedding_sql_literal,
+                                         char* buf,
+                                         size_t cap,
+                                         size_t* out_len);
+
+int harness_pique_build_similarity_search(const harness_ctx_t* ctx,
+                                          const char* collection,
+                                          const char* embedding_sql_literal,
+                                          size_t limit,
+                                          char* buf,
+                                          size_t cap,
+                                          size_t* out_len);
+
+/* Stage SQL into get_output and emit PIQUE_SQL_READY (caller feeds libpique). */
+int harness_pique_feed_sql(harness_ctx_t* ctx, const char* sql, size_t len);
+
+/* Build + stage log INSERT (redacts secrets when config.redact_secrets_in_log).
+ * Also records local ring via harness_log_interaction. */
+int harness_pique_feed_log(harness_ctx_t* ctx,
+                           const char* model,
+                           const char* prompt,
+                           const char* response);
+
+/* Build + stage session upsert SQL. */
+int harness_pique_feed_session(harness_ctx_t* ctx);
+
+/* Build + stage embedding INSERT or similarity SELECT (caller feeds libpique). */
+int harness_pique_feed_embedding(harness_ctx_t* ctx,
+                                 const char* collection,
+                                 const char* text,
+                                 const char* embedding_sql_literal);
+
+int harness_pique_feed_similarity(harness_ctx_t* ctx,
+                                  const char* collection,
+                                  const char* embedding_sql_literal,
+                                  size_t limit);
+
+/* Parse caller-supplied similarity rows (no sockets). Accepts lines of:
+ *   score<TAB>text
+ * or pipe form score|id|text
+ * Emits HARNESS_EVENT_VECTOR_HIT per row; VECTOR_CLASSIFIED summary on completion.
+ * Returns number of rows accepted, or -1 on hard error. */
+int harness_pique_parse_similarity_tsv(harness_ctx_t* ctx,
+                                       const char* data,
+                                       size_t len);
+
+/* When HAVE_PIQUE and config.pique_ctx is a pqwire client, submit staged SQL
+ * in get_output via pqwire_send_query. Still no sockets — pure buffer staging. */
+int harness_pique_submit_staged(harness_ctx_t* ctx);
+
+/* Redact known secret message contents in a mutable buffer (for PG policy). */
+int harness_redact_text_for_log(const harness_ctx_t* ctx,
+                                char* text,
+                                size_t cap);
 
 /* -------------------------------------------------------------------------
  * Honcho (optional provider; peer ids still first-class without it)

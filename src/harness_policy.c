@@ -201,3 +201,322 @@ int harness_honcho_build_conclude_request(harness_ctx_t* ctx,
     if (out_len) *out_len = used;
     return 0;
 }
+
+/* ---- PG log redaction + pique feed + vector SQL + compress_select ---- */
+
+int harness_redact_text_for_log(const harness_ctx_t* ctx, char* text, size_t cap) {
+    size_t i;
+    int replaced = 0;
+    if (!ctx || !text || cap == 0) return -1;
+    for (i = 0; i < ctx->message_count; i++) {
+        const harness_message_slot_t* m = &ctx->messages[i];
+        char* hit;
+        char ref[64];
+        size_t secret_len;
+        size_t ref_len;
+        size_t tail_len;
+        if (!m->in_use || !m->is_secret || m->content[0] == '\0') continue;
+        secret_len = strlen(m->content);
+        if (secret_len == 0) continue;
+        snprintf(ref, sizeof(ref), "[secret_ref:%u]", (unsigned)m->secret_ref_id);
+        ref_len = strlen(ref);
+        while ((hit = strstr(text, m->content)) != NULL) {
+            size_t prefix = (size_t)(hit - text);
+            tail_len = strlen(hit + secret_len);
+            if (prefix + ref_len + tail_len + 1 > cap) return -1;
+            memmove(hit + ref_len, hit + secret_len, tail_len + 1);
+            memcpy(hit, ref, ref_len);
+            replaced++;
+        }
+    }
+    return replaced;
+}
+
+int harness_history_compress_select(harness_ctx_t* ctx,
+                                    const uint8_t* keep_mask,
+                                    size_t mask_len) {
+    size_t i;
+    size_t w = 0;
+    size_t dropped = 0;
+    if (!ctx || !keep_mask || mask_len != ctx->message_count) return -1;
+    for (i = 0; i < ctx->message_count; i++) {
+        if (keep_mask[i]) {
+            if (w != i)
+                ctx->messages[w] = ctx->messages[i];
+            w++;
+        } else {
+            dropped++;
+        }
+    }
+    for (i = w; i < ctx->message_count; i++)
+        memset(&ctx->messages[i], 0, sizeof(ctx->messages[i]));
+    ctx->message_count = w;
+    harness_emit_ex(ctx, HARNESS_EVENT_HISTORY_COMPRESSED, NULL, NULL,
+                    (int)dropped, ctx->message_count, "vector_select");
+    harness_emit_ex(ctx, HARNESS_EVENT_VECTOR_CLASSIFIED, NULL, NULL,
+                    (int)dropped, mask_len, "compress_select");
+    return 0;
+}
+
+int harness_pique_build_embedding_insert(const harness_ctx_t* ctx,
+                                         const char* collection,
+                                         const char* text,
+                                         const char* embedding_sql_literal,
+                                         char* buf,
+                                         size_t cap,
+                                         size_t* out_len) {
+    size_t used = 0;
+    if (!ctx || !collection || !text || !embedding_sql_literal || !buf || cap == 0)
+        return -1;
+    if (harness_json_append_raw(buf, cap, &used,
+            "INSERT INTO harness_embeddings "
+            "(session_id, workspace_id, collection, text, embedding) VALUES ('") != 0)
+        return -1;
+    if (sql_escape_append(buf, cap, &used, ctx->session_id) != 0) return -1;
+    if (harness_json_append_raw(buf, cap, &used, "','") != 0) return -1;
+    if (sql_escape_append(buf, cap, &used, ctx->workspace_id) != 0) return -1;
+    if (harness_json_append_raw(buf, cap, &used, "','") != 0) return -1;
+    if (sql_escape_append(buf, cap, &used, collection) != 0) return -1;
+    if (harness_json_append_raw(buf, cap, &used, "','") != 0) return -1;
+    if (sql_escape_append(buf, cap, &used, text) != 0) return -1;
+    if (harness_json_append_raw(buf, cap, &used, "',") != 0) return -1;
+    /* embedding_sql_literal is trusted SQL fragment from caller, not user text */
+    if (harness_json_append_raw(buf, cap, &used, embedding_sql_literal) != 0) return -1;
+    if (harness_json_append_raw(buf, cap, &used, ");") != 0) return -1;
+    if (used >= cap) return -1;
+    buf[used] = '\0';
+    if (out_len) *out_len = used;
+    return 0;
+}
+
+int harness_pique_build_similarity_search(const harness_ctx_t* ctx,
+                                          const char* collection,
+                                          const char* embedding_sql_literal,
+                                          size_t limit,
+                                          char* buf,
+                                          size_t cap,
+                                          size_t* out_len) {
+    size_t used = 0;
+    char lim[32];
+    if (!ctx || !collection || !embedding_sql_literal || !buf || cap == 0) return -1;
+    if (limit == 0) limit = 8;
+    if (harness_json_append_raw(buf, cap, &used,
+            "SELECT id, text, 1 - (embedding <=> ") != 0)
+        return -1;
+    if (harness_json_append_raw(buf, cap, &used, embedding_sql_literal) != 0) return -1;
+    if (harness_json_append_raw(buf, cap, &used,
+            ") AS score FROM harness_embeddings WHERE collection='") != 0)
+        return -1;
+    if (sql_escape_append(buf, cap, &used, collection) != 0) return -1;
+    if (ctx->session_id[0]) {
+        if (harness_json_append_raw(buf, cap, &used, "' AND session_id='") != 0)
+            return -1;
+        if (sql_escape_append(buf, cap, &used, ctx->session_id) != 0) return -1;
+    }
+    if (harness_json_append_raw(buf, cap, &used, "' ORDER BY embedding <=> ") != 0)
+        return -1;
+    if (harness_json_append_raw(buf, cap, &used, embedding_sql_literal) != 0) return -1;
+    snprintf(lim, sizeof(lim), " LIMIT %zu;", limit);
+    if (harness_json_append_raw(buf, cap, &used, lim) != 0) return -1;
+    if (used >= cap) return -1;
+    buf[used] = '\0';
+    if (out_len) *out_len = used;
+    return 0;
+}
+
+int harness_pique_feed_sql(harness_ctx_t* ctx, const char* sql, size_t len) {
+    if (!ctx || !sql) return -1;
+    if (len == 0) len = strlen(sql);
+    if (harness_set_output(ctx, sql, len) != 0) return -1;
+    ctx->state = HARNESS_STATE_LOGGING;
+    harness_emit_ex(ctx, HARNESS_EVENT_PIQUE_SQL_READY, NULL, NULL, 0, len, "sql");
+    return 0;
+}
+
+int harness_pique_feed_log(harness_ctx_t* ctx,
+                           const char* model,
+                           const char* prompt,
+                           const char* response) {
+    char* sql = NULL;
+    size_t cap = 8192;
+    size_t n = 0;
+    char* pbuf = NULL;
+    char* rbuf = NULL;
+    size_t plen;
+    size_t rlen;
+    int rc = -1;
+
+    if (!ctx || !model) return -1;
+
+    plen = prompt ? strlen(prompt) : 0;
+    rlen = response ? strlen(response) : 0;
+    pbuf = (char*)malloc(plen + 1 + 256);
+    rbuf = (char*)malloc(rlen + 1 + 256);
+    sql = (char*)malloc(cap);
+    if (!pbuf || !rbuf || !sql) goto done;
+
+    if (prompt) memcpy(pbuf, prompt, plen + 1);
+    else pbuf[0] = '\0';
+    if (response) memcpy(rbuf, response, rlen + 1);
+    else rbuf[0] = '\0';
+
+    if (ctx->config.redact_secrets_in_log) {
+        if (harness_redact_text_for_log(ctx, pbuf, plen + 1 + 256) < 0) goto done;
+        if (harness_redact_text_for_log(ctx, rbuf, rlen + 1 + 256) < 0) goto done;
+    }
+
+    if (harness_pique_build_log_insert(ctx, model, pbuf, rbuf, sql, cap, &n) != 0)
+        goto done;
+    if (harness_pique_feed_sql(ctx, sql, n) != 0) goto done;
+    (void)harness_log_interaction(ctx, model, prompt, response);
+    harness_emit_ex(ctx, HARNESS_EVENT_PIQUE_FEED_STAGED, ctx->acting_peer_id, NULL,
+                    0, n, "log_insert");
+    rc = 0;
+done:
+    free(pbuf);
+    free(rbuf);
+    free(sql);
+    return rc;
+}
+
+int harness_pique_feed_session(harness_ctx_t* ctx) {
+    char sql[2048];
+    size_t n = 0;
+    if (!ctx) return -1;
+    if (harness_pique_build_session_upsert(ctx, sql, sizeof(sql), &n) != 0) return -1;
+    if (harness_pique_feed_sql(ctx, sql, n) != 0) return -1;
+    harness_emit_ex(ctx, HARNESS_EVENT_PIQUE_FEED_STAGED, NULL, NULL, 0, n,
+                    "session_upsert");
+    return 0;
+}
+
+int harness_pique_feed_embedding(harness_ctx_t* ctx,
+                                 const char* collection,
+                                 const char* text,
+                                 const char* embedding_sql_literal) {
+    char* sql = NULL;
+    size_t cap = 4096;
+    size_t n = 0;
+    int rc = -1;
+    if (!ctx || !collection || !text || !embedding_sql_literal) return -1;
+    sql = (char*)malloc(cap);
+    if (!sql) return -1;
+    if (harness_pique_build_embedding_insert(ctx, collection, text,
+            embedding_sql_literal, sql, cap, &n) != 0)
+        goto done;
+    if (harness_pique_feed_sql(ctx, sql, n) != 0) goto done;
+    harness_emit_ex(ctx, HARNESS_EVENT_PIQUE_FEED_STAGED, collection, NULL, 0, n,
+                    "embedding_insert");
+    harness_emit_ex(ctx, HARNESS_EVENT_VECTOR_CLASSIFIED, collection, NULL, 0, 0,
+                    "embedding_insert");
+    rc = 0;
+done:
+    free(sql);
+    return rc;
+}
+
+int harness_pique_feed_similarity(harness_ctx_t* ctx,
+                                  const char* collection,
+                                  const char* embedding_sql_literal,
+                                  size_t limit) {
+    char* sql = NULL;
+    size_t cap = 4096;
+    size_t n = 0;
+    int rc = -1;
+    if (!ctx || !collection || !embedding_sql_literal) return -1;
+    sql = (char*)malloc(cap);
+    if (!sql) return -1;
+    if (harness_pique_build_similarity_search(ctx, collection, embedding_sql_literal,
+            limit, sql, cap, &n) != 0)
+        goto done;
+    if (harness_pique_feed_sql(ctx, sql, n) != 0) goto done;
+    harness_emit_ex(ctx, HARNESS_EVENT_PIQUE_FEED_STAGED, collection, NULL, 0, n,
+                    "similarity_search");
+    rc = 0;
+done:
+    free(sql);
+    return rc;
+}
+
+/* Parse one numeric score prefix (possibly float or fixed-point int). */
+static int parse_score_milli(const char* s, int* out_milli) {
+    double v = 0.0;
+    char* end = NULL;
+    if (!s || !out_milli) return -1;
+    while (*s == ' ' || *s == '\t') s++;
+    v = strtod(s, &end);
+    if (end == s) return -1;
+    if (v < -1e6) v = -1e6;
+    if (v > 1e6) v = 1e6;
+    *out_milli = (int)(v * 1000.0 + (v >= 0 ? 0.5 : -0.5));
+    return 0;
+}
+
+int harness_pique_parse_similarity_tsv(harness_ctx_t* ctx,
+                                       const char* data,
+                                       size_t len) {
+    size_t i = 0;
+    size_t rows = 0;
+    if (!ctx || !data) return -1;
+    if (len == 0) len = strlen(data);
+    ctx->state = HARNESS_STATE_VECTOR_OP;
+
+    while (i < len) {
+        size_t line_start = i;
+        size_t line_end;
+        char line[HARNESS_EVENT_DETAIL_CAP + 256];
+        size_t copy_n;
+        char* p;
+        char* tab;
+        char* pipe;
+        int score_milli = 0;
+        const char* text_part;
+        int used_pipe = 0;
+
+        while (i < len && data[i] != '\n' && data[i] != '\r') i++;
+        line_end = i;
+        while (i < len && (data[i] == '\n' || data[i] == '\r')) i++;
+        if (line_end == line_start) continue;
+
+        copy_n = line_end - line_start;
+        if (copy_n >= sizeof(line)) copy_n = sizeof(line) - 1;
+        memcpy(line, data + line_start, copy_n);
+        line[copy_n] = '\0';
+
+        p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0' || *p == '#') continue;
+
+        /* Prefer tab form score\ttext; else pipe form score|id|text */
+        tab = strchr(p, '\t');
+        pipe = strchr(p, '|');
+        if (tab && (!pipe || tab < pipe)) {
+            *tab = '\0';
+            text_part = tab + 1;
+        } else if (pipe) {
+            *pipe = '\0';
+            text_part = pipe + 1;
+            used_pipe = 1;
+            /* optional id field: score|id|text → use field after second | */
+            {
+                char* pipe2 = strchr(text_part, '|');
+                if (pipe2) text_part = pipe2 + 1;
+            }
+            (void)used_pipe;
+        } else {
+            continue;
+        }
+
+        if (parse_score_milli(p, &score_milli) != 0) continue;
+        while (*text_part == ' ' || *text_part == '\t') text_part++;
+        if (*text_part == '\0') text_part = "(empty)";
+
+        harness_emit_ex(ctx, HARNESS_EVENT_VECTOR_HIT, ctx->session_id, NULL,
+                        score_milli, rows, text_part);
+        rows++;
+    }
+
+    harness_emit_ex(ctx, HARNESS_EVENT_VECTOR_CLASSIFIED, NULL, NULL,
+                    (int)rows, rows, "similarity_tsv");
+    return (int)rows;
+}

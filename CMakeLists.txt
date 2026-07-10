@@ -31,15 +31,19 @@ else()
     message(WARNING "Lua not found; lua_bindings stub only")
 endif()
 
-# libpique (PG + pg_vector logging/classification)
-find_path(PIQUE_INCLUDE_DIR NAMES pique.h PATHS /home/dwhite/pique/include ../pique/include)
-find_library(PIQUE_LIBRARY NAMES pique PATHS /home/dwhite/pique/build ../pique/build)
+# libpique / libpqwire (PostgreSQL wire + pg_vector logging/classification)
+# Sibling lives at /home/dwhite/pique; library name is pqwire, not "pique".
+find_path(PIQUE_INCLUDE_DIR NAMES pqwire.h pique.h
+    PATHS /home/dwhite/pique/include ../pique/include)
+find_library(PIQUE_LIBRARY NAMES pqwire pique
+    PATHS /home/dwhite/pique/build ../pique/build)
 if(PIQUE_INCLUDE_DIR AND PIQUE_LIBRARY)
     target_include_directories(harness PRIVATE ${PIQUE_INCLUDE_DIR})
     target_link_libraries(harness PRIVATE ${PIQUE_LIBRARY})
-    message(STATUS "Found libpique: ${PIQUE_LIBRARY}")
+    target_compile_definitions(harness PRIVATE HAVE_PIQUE=1)
+    message(STATUS "Found libpique/pqwire: ${PIQUE_LIBRARY}")
 else()
-    message(WARNING "libpique not found; vector/PG stubs only")
+    message(WARNING "libpique/pqwire not found; SQL feed/parse paths only (no wire submit)")
 endif()
 
 include(GNUInstallDirs)
