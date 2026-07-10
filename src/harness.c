@@ -89,6 +89,20 @@ int harness_set_output(harness_ctx_t* ctx, const void* data, size_t len) {
         ctx->output_len = 0;
         return 0;
     }
+    if (ctx->config.caller_output_buf && ctx->config.caller_output_cap > 0) {
+        size_t n = len < ctx->config.caller_output_cap ? len : ctx->config.caller_output_cap;
+        memcpy(ctx->config.caller_output_buf, data, n);
+        ctx->output_buf = ctx->config.caller_output_buf;
+        ctx->output_cap = ctx->config.caller_output_cap;
+        ctx->output_len = n;
+        ctx->output_is_caller_owned = true;
+        return (n == len) ? 0 : -1;
+    }
+    if (ctx->output_is_caller_owned) {
+        ctx->output_buf = NULL;
+        ctx->output_cap = 0;
+        ctx->output_is_caller_owned = false;
+    }
     if (len > ctx->output_cap) {
         uint8_t* n = (uint8_t*)realloc(ctx->output_buf, len);
         if (!n) return -1;
@@ -196,6 +210,9 @@ harness_ctx_t* harness_create_with_config(harness_role_t role, const harness_con
     ctx->honcho = config->honcho_ctx;
     ctx->lua_state = NULL;
     ctx->session_retired = false;
+    ctx->lua_should_mirror_ref = HARNESS_LUA_NOREF;
+    ctx->lua_loop_criterion_ref = HARNESS_LUA_NOREF;
+    ctx->lua_tool_count = 0;
     ctx->state = HARNESS_STATE_READY;
     return ctx;
 }
@@ -207,7 +224,9 @@ void harness_destroy(harness_ctx_t* ctx) {
     free(ctx->participants);
     free(ctx->messages);
     free(ctx->tools);
-    free(ctx->output_buf);
+    if (!ctx->output_is_caller_owned)
+        free(ctx->output_buf);
+    free(ctx->stream_buf);
     free(ctx);
 }
 
@@ -280,6 +299,9 @@ int harness_participant_add(harness_ctx_t* ctx,
     slot->kind = kind;
     slot->privileged = privileged;
     slot->muted = false;
+    slot->capabilities = privileged
+        ? (HARNESS_CAP_SEE_SECRETS | HARNESS_CAP_MIRROR_HONCHO | HARNESS_CAP_INVOKE_TOOLS)
+        : HARNESS_CAP_NONE;
     ctx->participant_count++;
     harness_emit(ctx, HARNESS_EVENT_PARTICIPANT_ADDED, peer_id, NULL, (int)kind,
                  ctx->participant_count - 1);
@@ -310,6 +332,10 @@ int harness_participant_set_privileged(harness_ctx_t* ctx,
     harness_participant_slot_t* slot = harness_find_participant_mut(ctx, peer_id);
     if (!slot) return -1;
     slot->privileged = privileged;
+    if (privileged)
+        slot->capabilities |= HARNESS_CAP_SEE_SECRETS;
+    else
+        slot->capabilities &= ~HARNESS_CAP_SEE_SECRETS;
     return 0;
 }
 
@@ -637,6 +663,11 @@ const char* harness_event_type_name(harness_event_type_t type) {
     case HARNESS_EVENT_VECTOR_CLASSIFIED: return "vector_classified";
     case HARNESS_EVENT_HONCHO_MIRRORED: return "honcho_mirrored";
     case HARNESS_EVENT_HONCHO_REQUEST_READY: return "honcho_request_ready";
+    case HARNESS_EVENT_HONCHO_RESPONSE_PARSED: return "honcho_response_parsed";
+    case HARNESS_EVENT_HISTORY_READY: return "history_ready";
+    case HARNESS_EVENT_STREAM_FINISHED: return "stream_finished";
+    case HARNESS_EVENT_PARTICIPANT_MUTED: return "participant_muted";
+    case HARNESS_EVENT_HISTORY_COMPRESSED: return "history_compressed";
     case HARNESS_EVENT_EXTENSION_CALLED: return "extension_called";
     case HARNESS_EVENT_ERROR: return "error";
     default: return "unknown";
@@ -644,17 +675,31 @@ const char* harness_event_type_name(harness_event_type_t type) {
 }
 
 bool harness_should_loop(harness_ctx_t* ctx, const char* criteria) {
+    int lua_bool = -1;
     if (!ctx || !criteria) return false;
     ctx->state = HARNESS_STATE_LOOPING;
-    /* Simple built-in: "false" / "0" / "never" → stop; else continue (Lua can replace) */
     if (strcmp(criteria, "false") == 0 || strcmp(criteria, "0") == 0 ||
         strcmp(criteria, "never") == 0) {
         harness_emit(ctx, HARNESS_EVENT_LOOP_DECISION, NULL, NULL, 0, 0);
         return false;
     }
+    if (strcmp(criteria, "true") == 0 || strcmp(criteria, "1") == 0 ||
+        strcmp(criteria, "always") == 0) {
+        harness_emit(ctx, HARNESS_EVENT_LOOP_DECISION, NULL, NULL, 1, 0);
+        return true;
+    }
+    /* Lua expression / registered criterion when available */
+    if (harness_lua_eval_loop(ctx, criteria, &lua_bool) == 0) {
+        harness_emit(ctx, HARNESS_EVENT_LOOP_DECISION, NULL, NULL, lua_bool ? 1 : 0, 0);
+        return lua_bool != 0;
+    }
+    /* Unknown criteria default to continue once (policy can refine) */
     harness_emit(ctx, HARNESS_EVENT_LOOP_DECISION, NULL, NULL, 1, 0);
     return true;
 }
+
+/* declared in harness_extra.c */
+void harness_log_record_push(harness_ctx_t* ctx, const char* model);
 
 int harness_log_interaction(harness_ctx_t* ctx,
                             const char* model,
@@ -665,6 +710,7 @@ int harness_log_interaction(harness_ctx_t* ctx,
     if (!ctx || !model) return -1;
     ctx->interactions_logged++;
     ctx->state = HARNESS_STATE_LOGGING;
+    harness_log_record_push(ctx, model);
     harness_emit(ctx, HARNESS_EVENT_INTERACTION_LOGGED, NULL, NULL, 0,
                  (size_t)ctx->interactions_logged);
     return 0;
@@ -731,7 +777,7 @@ int harness_register_extension(harness_ctx_t* ctx, const char* name, harness_ext
 }
 
 const char* harness_version(void) {
-    return "0.2.0-todo-impl";
+    return "0.4.0-todo-impl";
 }
 
 /* ---- Compatibility wrappers ---- */

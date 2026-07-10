@@ -21,11 +21,8 @@ static const char* msg_role_str(const harness_ctx_t* ctx, harness_message_role_t
 }
 
 static bool acting_peer_privileged(const harness_ctx_t* ctx) {
-    const harness_participant_slot_t* p;
     if (!ctx || ctx->acting_peer_id[0] == '\0') return true;
-    p = harness_find_participant(ctx, ctx->acting_peer_id);
-    if (!p) return false;
-    return p->privileged;
+    return harness_peer_can_see_secrets(ctx, ctx->acting_peer_id);
 }
 
 static int append_tool_calls_json(char* buf, size_t cap, size_t* used,
@@ -92,10 +89,35 @@ int harness_openai_context_build_impl(harness_ctx_t* ctx, const harness_context_
         first_msg = false;
     }
 
+    /* Kind-specific SOUL for acting peer (additional system message) */
+    {
+        const harness_participant_slot_t* ap =
+            ctx->acting_peer_id[0] ? harness_find_participant(ctx, ctx->acting_peer_id) : NULL;
+        if (ap && (int)ap->kind >= 0 && (int)ap->kind <= 2 &&
+            ctx->soul_by_kind[ap->kind][0] != '\0') {
+            if (!first_msg && harness_json_append_raw(buf, cap, &used, ",") != 0) goto fail;
+            if (harness_json_append_raw(buf, cap, &used, "{\"role\":\"system\",\"content\":\"") != 0)
+                goto fail;
+            if (harness_json_escape_append(buf, cap, &used, ctx->soul_by_kind[ap->kind]) != 0)
+                goto fail;
+            if (harness_json_append_raw(buf, cap, &used, "\"}") != 0) goto fail;
+            first_msg = false;
+        }
+    }
+
     for (i = 0; i < ctx->message_count; i++) {
         const harness_message_slot_t* msg = &ctx->messages[i];
         const char* body = msg->content;
         bool content_null = false;
+        const harness_participant_slot_t* peer;
+
+        /* Skip muted participants (keep tool results and system/developer) */
+        if (msg->peer_id[0] && msg->role != HARNESS_MSG_SYSTEM &&
+            msg->role != HARNESS_MSG_DEVELOPER && msg->role != HARNESS_MSG_TOOL) {
+            peer = harness_find_participant(ctx, msg->peer_id);
+            if (peer && peer->muted)
+                continue;
+        }
 
         if (!first_msg) {
             if (harness_json_append_raw(buf, cap, &used, ",") != 0) goto fail;
@@ -123,7 +145,7 @@ int harness_openai_context_build_impl(harness_ctx_t* ctx, const harness_context_
         }
 
         temp[0] = '\0';
-        if (prefix && msg->peer_id[0] != '\0' &&
+        if (!msg->content_is_parts && prefix && msg->peer_id[0] != '\0' &&
             msg->role != HARNESS_MSG_SYSTEM && msg->role != HARNESS_MSG_DEVELOPER &&
             msg->role != HARNESS_MSG_TOOL &&
             !(msg->role == HARNESS_MSG_ASSISTANT && msg->tool_call_count > 0 && body[0] == '\0')) {
@@ -133,12 +155,15 @@ int harness_openai_context_build_impl(harness_ctx_t* ctx, const harness_context_
 
         /* Assistant with only tool_calls: content null */
         if (msg->role == HARNESS_MSG_ASSISTANT && msg->tool_call_count > 0 &&
-            (body[0] == '\0')) {
+            (body[0] == '\0') && !msg->content_is_parts) {
             content_null = true;
         }
 
         if (content_null) {
             if (harness_json_append_raw(buf, cap, &used, ",\"content\":null") != 0) goto fail;
+        } else if (msg->content_is_parts && !(msg->is_secret && redact)) {
+            if (harness_json_append_raw(buf, cap, &used, ",\"content\":") != 0) goto fail;
+            if (harness_json_append_raw(buf, cap, &used, body) != 0) goto fail;
         } else {
             if (harness_json_append_raw(buf, cap, &used, ",\"content\":\"") != 0) goto fail;
             if (harness_json_escape_append(buf, cap, &used, body) != 0) goto fail;
@@ -307,8 +332,29 @@ static void parse_tool_calls(harness_ctx_t* ctx, const char* json) {
 
         args_p = name_p;
         if (extract_string_after_key(args_p, "arguments", args, sizeof(args)) != 0) {
-            /* Responses API may use object arguments — store empty object */
-            harness_copy_id(args, sizeof(args), "{}");
+            /* Non-string arguments object: copy balanced braces */
+            const char* ak = strstr(args_p, "\"arguments\"");
+            args[0] = '\0';
+            if (ak) {
+                const char* brace = strchr(ak, '{');
+                if (brace) {
+                    int depth = 0;
+                    const char* e = brace;
+                    do {
+                        if (*e == '{') depth++;
+                        else if (*e == '}') depth--;
+                        e++;
+                    } while (*e && depth > 0);
+                    if (depth == 0) {
+                        size_t n = (size_t)(e - brace);
+                        if (n >= sizeof(args)) n = sizeof(args) - 1;
+                        memcpy(args, brace, n);
+                        args[n] = '\0';
+                    }
+                }
+            }
+            if (!args[0])
+                harness_copy_id(args, sizeof(args), "{}");
         }
 
         (void)push_tool_call(ctx, id, name, args, "function");

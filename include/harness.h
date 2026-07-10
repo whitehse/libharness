@@ -43,6 +43,13 @@ typedef enum {
     HARNESS_PARTICIPANT_AGENT
 } harness_participant_kind_t;
 
+/* Capability bits (privilege matrix; privileged maps to SEE_SECRETS) */
+#define HARNESS_CAP_NONE            0u
+#define HARNESS_CAP_SEE_SECRETS     (1u << 0)
+#define HARNESS_CAP_MIRROR_HONCHO   (1u << 1)
+#define HARNESS_CAP_ADMIN           (1u << 2)
+#define HARNESS_CAP_INVOKE_TOOLS    (1u << 3)
+
 /* Message roles in a context (OpenAI-compatible) */
 typedef enum {
     HARNESS_MSG_SYSTEM = 0,     /* SOUL / privileged instructions */
@@ -99,6 +106,11 @@ typedef enum {
     HARNESS_EVENT_VECTOR_CLASSIFIED,
     HARNESS_EVENT_HONCHO_MIRRORED,
     HARNESS_EVENT_HONCHO_REQUEST_READY,
+    HARNESS_EVENT_HONCHO_RESPONSE_PARSED,
+    HARNESS_EVENT_HISTORY_READY,
+    HARNESS_EVENT_STREAM_FINISHED,
+    HARNESS_EVENT_PARTICIPANT_MUTED,
+    HARNESS_EVENT_HISTORY_COMPRESSED,
     HARNESS_EVENT_EXTENSION_CALLED,
     HARNESS_EVENT_ERROR
 } harness_event_type_t;
@@ -134,6 +146,24 @@ typedef struct harness_tool_def {
     harness_tool_type_t type;      /* function or opaque provider types */
 } harness_tool_def_t;
 
+/* Multi-part message content (OpenAI content array items) */
+typedef struct harness_content_part {
+    const char* type;              /* "text", "image_url", "refusal" */
+    const char* text;              /* for text / refusal */
+    const char* image_url;         /* for image_url */
+} harness_content_part_t;
+
+/* One interaction audit record (local ring; pique path can mirror later) */
+typedef struct harness_interaction_record {
+    char model[64];
+    char session_id[HARNESS_PEER_ID_CAP];
+    char acting_peer_id[HARNESS_PEER_ID_CAP];
+    uint32_t prompt_tokens;
+    uint32_t completion_tokens;
+    uint32_t total_tokens;
+    uint64_t seq;
+} harness_interaction_record_t;
+
 /* -------------------------------------------------------------------------
  * Config (caller-owned pointers; not freed by library)
  * ------------------------------------------------------------------------- */
@@ -157,6 +187,10 @@ typedef struct {
     bool map_developer_to_system;    /* default true — provider quirk */
     bool drop_oldest_messages;       /* ring-buffer when message cap hit */
     harness_backpressure_t event_backpressure;
+
+    /* Optional caller-owned output buffer (no library realloc when set) */
+    uint8_t* caller_output_buf;
+    size_t caller_output_cap;
 } harness_config_t;
 
 /* Context build parameters (model turn) */
@@ -206,6 +240,19 @@ int harness_participant_set_privileged(harness_ctx_t* ctx,
                                        const char* peer_id,
                                        bool privileged);
 
+int harness_participant_set_muted(harness_ctx_t* ctx,
+                                  const char* peer_id,
+                                  bool muted);
+
+bool harness_participant_is_muted(const harness_ctx_t* ctx, const char* peer_id);
+
+int harness_participant_set_capabilities(harness_ctx_t* ctx,
+                                         const char* peer_id,
+                                         uint32_t capabilities);
+
+uint32_t harness_participant_get_capabilities(const harness_ctx_t* ctx,
+                                              const char* peer_id);
+
 size_t harness_participant_count(const harness_ctx_t* ctx);
 
 int harness_participant_get(const harness_ctx_t* ctx,
@@ -242,10 +289,28 @@ int harness_message_append_tool_result(harness_ctx_t* ctx,
                                        const char* tool_call_id,
                                        const char* content);
 
+/* Append multi-part content (serialized as OpenAI content array). */
+int harness_message_append_parts(harness_ctx_t* ctx,
+                                 const char* peer_id,
+                                 harness_message_role_t role,
+                                 const harness_content_part_t* parts,
+                                 size_t part_count,
+                                 bool is_secret);
+
 size_t harness_message_count(const harness_ctx_t* ctx);
 
 /* Stable secret reference id for message index (0 if not secret). */
 uint32_t harness_message_secret_ref(const harness_ctx_t* ctx, size_t index);
+
+/* Export/import session message history as JSON (dialectic-friendly). */
+int harness_history_export_json(const harness_ctx_t* ctx,
+                                char* buf,
+                                size_t cap,
+                                size_t* out_len);
+int harness_history_import_json(harness_ctx_t* ctx, const char* json, size_t len);
+
+/* Drop oldest compressible messages until count <= keep_last (tool results kept longer). */
+int harness_history_compress(harness_ctx_t* ctx, size_t keep_last);
 
 /* Format identity prefix into buf, e.g. "[human_alice]". Returns bytes needed
  * (excluding NUL) or -1 on error. Truncates if buflen too small. */
@@ -256,6 +321,13 @@ int harness_format_identity_prefix(const char* peer_id, char* buf, size_t buflen
  * ------------------------------------------------------------------------- */
 int harness_soul_set(harness_ctx_t* ctx, const char* soul_text);
 const char* harness_soul_get(const harness_ctx_t* ctx);
+
+/* Kind-specific SOUL defaults (used when acting peer has that kind). */
+int harness_soul_set_for_kind(harness_ctx_t* ctx,
+                              harness_participant_kind_t kind,
+                              const char* soul_text);
+const char* harness_soul_get_for_kind(const harness_ctx_t* ctx,
+                                      harness_participant_kind_t kind);
 
 /* Register one tool as OpenAI-compatible tool JSON object string. */
 int harness_tool_register_json(harness_ctx_t* ctx, const char* tool_json);
@@ -294,6 +366,11 @@ int harness_response_usage(const harness_ctx_t* ctx, harness_usage_t* out);
 /* Best-effort assistant text from last parse (empty string if none). */
 const char* harness_response_assistant_text(const harness_ctx_t* ctx);
 
+/* Optional streaming assembly: feed chunks, finish → same as response_parse. */
+int harness_response_stream_begin(harness_ctx_t* ctx);
+int harness_response_stream_feed(harness_ctx_t* ctx, const uint8_t* data, size_t len);
+int harness_response_stream_finish(harness_ctx_t* ctx);
+
 /* -------------------------------------------------------------------------
  * Classic plumbing: feed_input / next_event / get_output
  * feed_input currently treats buffer as a provider response (parse).
@@ -317,9 +394,32 @@ int harness_log_interaction(harness_ctx_t* ctx,
                             const char* prompt,
                             const char* response);
 
+size_t harness_log_count(const harness_ctx_t* ctx);
+int harness_log_get(const harness_ctx_t* ctx,
+                    size_t index,
+                    harness_interaction_record_t* out);
+int harness_log_export_json(const harness_ctx_t* ctx,
+                            char* buf,
+                            size_t cap,
+                            size_t* out_len);
+
 int harness_classify_vector(harness_ctx_t* ctx,
                             const char* data,
                             const char* collection);
+
+/* Build SQL text for caller to feed into libpique (no sockets). */
+int harness_pique_build_log_insert(const harness_ctx_t* ctx,
+                                   const char* model,
+                                   const char* prompt,
+                                   const char* response,
+                                   char* buf,
+                                   size_t cap,
+                                   size_t* out_len);
+
+int harness_pique_build_session_upsert(const harness_ctx_t* ctx,
+                                       char* buf,
+                                       size_t cap,
+                                       size_t* out_len);
 
 /* -------------------------------------------------------------------------
  * Honcho (optional provider; peer ids still first-class without it)
@@ -339,6 +439,30 @@ int harness_honcho_build_messages_request(harness_ctx_t* ctx,
                                           const char* content,
                                           const char* metadata_json);
 
+/* Metadata helpers (write compact JSON object into buf). */
+int harness_honcho_metadata_chat(char* buf, size_t cap, size_t* out_len);
+int harness_honcho_metadata_agent(char* buf, size_t cap, size_t* out_len, const char* model);
+
+/* Parse Honcho-style response JSON into events (no sockets). */
+int harness_honcho_parse_response(harness_ctx_t* ctx, const uint8_t* data, size_t len);
+
+/* Default mirror policy: true for narrative, false for tool-like content. */
+bool harness_honcho_should_mirror(const harness_ctx_t* ctx, const char* content);
+
+/* Honcho peer-card / conclusion request body builders (caller-fed transport). */
+int harness_honcho_build_peer_card_request(harness_ctx_t* ctx,
+                                           const char* peer_id,
+                                           char* buf,
+                                           size_t cap,
+                                           size_t* out_len);
+
+int harness_honcho_build_conclude_request(harness_ctx_t* ctx,
+                                          const char* peer_id,
+                                          const char* conclusion,
+                                          char* buf,
+                                          size_t cap,
+                                          size_t* out_len);
+
 int harness_honcho_store_memory(harness_ctx_t* ctx,
                                 const char* peer_id,
                                 const char* key,
@@ -353,7 +477,19 @@ const char* harness_honcho_get_memory(harness_ctx_t* ctx,
  * ------------------------------------------------------------------------- */
 int harness_lua_init(harness_ctx_t* ctx, void* lua_state);
 
-/* Compatibility wrappers (bootstrap names → ADR 002 surfaces) */
+/* Load Lua source from memory (not a filesystem path). Requires HAVE_LUA. */
+int harness_lua_load_script(harness_ctx_t* ctx, const char* source, size_t len);
+
+/* Invoke a Lua-registered policy tool by name (args/result JSON strings). */
+int harness_tool_policy_invoke(harness_ctx_t* ctx,
+                               const char* name,
+                               const char* arguments_json,
+                               char* result_buf,
+                               size_t result_cap,
+                               size_t* out_len);
+
+/* Compatibility wrappers (bootstrap names → ADR 002 surfaces).
+ * Deprecated: prefer non-lua_* names (soul_set, tools_enumerate, etc.). */
 int harness_lua_enumerate_tools(harness_ctx_t* ctx);
 int harness_lua_set_personality(harness_ctx_t* ctx, const char* personality_json_or_id);
 int harness_lua_process_openai_compat(harness_ctx_t* ctx, const char* request_json);

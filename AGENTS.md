@@ -32,7 +32,7 @@
 - State machine and Lua integration remain pure (inputs → state/output only; Lua for policy).
 - Harness characteristics (tools, personality, loop criteria) are exercisable via Lua interface.
 
-**Current status**: ADR 002 implementation in progress (v0.2.0-todo-impl). Context builder with tool_calls + stable secret refs, structured response parse (tool calls/usage), session retire, participant lifecycle, Honcho request builder + mirror policy, dialectic tests. See TODO.md for remaining pique/Lua/fuzz work.
+**Current status**: v0.4.0-todo-impl — capability matrix, kind SOUL, history compress, pique SQL builders, Lua register_tool/loop/mirror hooks, Honcho peer-card builders, ADR 003 single-session. See TODO.md.
 
 **Testing, Fuzzing & Valgrind Policy** (see ADR 003):
 - Every change to core files must add or update tests in `tests/`.

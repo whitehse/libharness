@@ -38,3 +38,17 @@ int harness_pique_store_personality(harness_ctx_t* ctx,
     /* SOUL text may be staged locally until PG write exists */
     return harness_soul_set(ctx, json);
 }
+
+/* Dialectics: build SQL for caller-fed libpique; no sockets here. */
+int harness_pique_prepare_log(harness_ctx_t* ctx,
+                              const char* model,
+                              const char* prompt,
+                              const char* response,
+                              char* sql_buf,
+                              size_t cap,
+                              size_t* out_len) {
+    int rc = harness_pique_build_log_insert(ctx, model, prompt, response, sql_buf, cap, out_len);
+    if (rc == 0)
+        (void)harness_log_interaction(ctx, model ? model : "unknown", prompt, response);
+    return rc;
+}

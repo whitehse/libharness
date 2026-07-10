@@ -13,8 +13,8 @@ endif()
 
 # libharness - AI harness state machine (Lua policy + libpique + Honcho)
 add_library(harness STATIC
-    src/harness.c src/lua_bindings.c src/openai_processor.c
-    src/honcho_interface.c src/pique_integration.c)
+    src/harness.c src/harness_extra.c src/harness_policy.c src/lua_bindings.c
+    src/openai_processor.c src/honcho_interface.c src/pique_integration.c)
 
 target_include_directories(harness PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

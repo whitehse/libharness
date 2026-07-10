@@ -25,6 +25,10 @@
 #define HARNESS_MEMORY_SLOTS        32
 #define HARNESS_MEMORY_KEY_MAX      64
 #define HARNESS_MEMORY_VAL_MAX     512
+#define HARNESS_LOG_SLOTS           32
+#define HARNESS_STREAM_DEFAULT_CAP  (64u * 1024u)
+#define HARNESS_LUA_TOOL_MAX        32
+#define HARNESS_LUA_NOREF           (-2)
 
 typedef enum {
     HARNESS_STATE_INIT = 0,
@@ -41,8 +45,9 @@ typedef enum {
 typedef struct {
     char peer_id[HARNESS_PEER_ID_MAX];
     harness_participant_kind_t kind;
-    bool privileged;
+    bool privileged;           /* legacy; mirrors SEE_SECRETS */
     bool muted;
+    uint32_t capabilities;     /* HARNESS_CAP_* bitset */
 } harness_participant_slot_t;
 
 typedef struct {
@@ -58,8 +63,9 @@ typedef struct {
     harness_message_role_t role;
     char content[HARNESS_MSG_CONTENT_MAX];
     bool is_secret;
-    uint32_t secret_ref_id; /* stable across context rebuilds; 0 if not secret */
+    uint32_t secret_ref_id;
     bool in_use;
+    bool content_is_parts; /* content holds JSON array of parts */
     harness_embedded_tool_call_t tool_calls[HARNESS_MSG_TOOL_CALLS_MAX];
     size_t tool_call_count;
 } harness_message_slot_t;
@@ -101,6 +107,7 @@ struct harness_ctx {
     size_t tool_count;
 
     char soul[HARNESS_SOUL_MAX];
+    char soul_by_kind[3][HARNESS_SOUL_MAX]; /* human, app, agent */
 
     harness_event_t* event_queue;
     size_t queue_size;
@@ -120,6 +127,7 @@ struct harness_ctx {
     uint8_t* output_buf;
     size_t output_len;
     size_t output_cap;
+    bool output_is_caller_owned;
 
     harness_response_status_t last_response_status;
     size_t last_tool_call_count;
@@ -129,11 +137,29 @@ struct harness_ctx {
 
     harness_memory_slot_t memory[HARNESS_MEMORY_SLOTS];
 
+    harness_interaction_record_t log_ring[HARNESS_LOG_SLOTS];
+    size_t log_count;
+    size_t log_head; /* next write index */
+
+    uint8_t* stream_buf;
+    size_t stream_len;
+    size_t stream_cap;
+    bool stream_active;
+
     uint64_t interactions_logged;
     uint32_t secret_seq;
+
+    /* Lua policy tool refs (registry indices); -2 = none */
+    struct {
+        char name[HARNESS_TOOL_NAME_CAP];
+        int ref;
+        bool in_use;
+    } lua_tools[HARNESS_LUA_TOOL_MAX];
+    size_t lua_tool_count;
+    int lua_should_mirror_ref;
+    int lua_loop_criterion_ref;
 };
 
-/* Internal helpers (defined in harness.c) */
 void harness_emit(harness_ctx_t* ctx, harness_event_type_t type,
                   const char* peer_id, const char* call_id, int code, size_t index);
 int harness_set_output(harness_ctx_t* ctx, const void* data, size_t len);
@@ -144,12 +170,18 @@ harness_participant_slot_t* harness_find_participant_mut(harness_ctx_t* ctx,
 int harness_ensure_message_slot(harness_ctx_t* ctx);
 void harness_copy_id(char* dst, size_t cap, const char* src);
 
-/* JSON helpers used by openai + honcho modules */
 int harness_json_escape_append(char* dest, size_t cap, size_t* used, const char* src);
 int harness_json_append_raw(char* dest, size_t cap, size_t* used, const char* s);
 
-/* Module entry points */
+const char* harness_msg_role_name(harness_message_role_t role);
+int harness_msg_role_from_name(const char* name, harness_message_role_t* out);
+
 int harness_openai_context_build_impl(harness_ctx_t* ctx, const harness_context_params_t* params);
 int harness_openai_response_parse_impl(harness_ctx_t* ctx, const uint8_t* data, size_t len);
+
+void harness_log_record_push(harness_ctx_t* ctx, const char* model);
+bool harness_peer_can_see_secrets(const harness_ctx_t* ctx, const char* peer_id);
+int harness_lua_eval_should_mirror(harness_ctx_t* ctx, const char* content, int* out_bool);
+int harness_lua_eval_loop(harness_ctx_t* ctx, const char* criteria, int* out_bool);
 
 #endif /* HARNESS_INTERNAL_H */

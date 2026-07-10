@@ -8,3 +8,5 @@ ADRs in docs/decisions/:
 
 - 001-bootstrap.md — project bootstrap
 - 002-session-model-context-and-honcho.md — multi-party session domain model and Honcho join
+- 003-single-session-per-context.md — one session per harness_ctx_t
+- docs/honcho-transport-notes.md — caller-owned Honcho HTTP notes

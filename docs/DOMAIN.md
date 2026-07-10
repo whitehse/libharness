@@ -97,3 +97,13 @@ Provider output normalized by the processor. Typical fields: `id`, `object`, `cr
 10. Optionally classify/compress state with pg_vector.
 
 All model calls logged. Personalities and long-term peer memory prefer PG embeddings + Honcho graph; local files minimized.
+
+## Privilege capabilities (v0.4)
+
+Participants may carry a capability bitset (`HARNESS_CAP_SEE_SECRETS`,
+`MIRROR_HONCHO`, `ADMIN`, `INVOKE_TOOLS`). Legacy `privileged=true` grants
+SEE_SECRETS (+ common agent defaults on add). Secret redaction uses
+`harness_peer_can_see_secrets` against the acting peer.
+
+Kind-specific SOUL text (`harness_soul_set_for_kind`) is injected as an extra
+system message when the acting peer matches that kind.
