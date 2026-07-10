@@ -44,3 +44,18 @@ Helpers:
 
 Feed Honcho JSON into `harness_honcho_parse_response` to emit
 `HARNESS_EVENT_HONCHO_RESPONSE_PARSED` events with peer ids — still no I/O.
+
+## Feed path (v0.7)
+
+Stage peer-card / conclude request JSON without a separate caller buffer:
+
+```c
+harness_honcho_feed_peer_card(ctx, "human_alice");
+/* HONCHO_REQUEST_READY with detail="peer_card"; body in get_output */
+
+harness_honcho_feed_conclude(ctx, "human_alice", "prefers brevity");
+/* detail="conclude" */
+```
+
+Dialectic tests exchange these buffers between two harness contexts (see
+`tests/test_dialectic_honcho.c`).

@@ -1,11 +1,12 @@
 # libharness — Implementation TODO
 
-Current state (v0.6.0-todo-impl): pique feed path (log/session/embedding/similarity),
-PG log secret redaction, similarity TSV → VECTOR_HIT events, optional HAVE_PIQUE
-(pqwire) link for submit_staged, Lua wait_event/poll_until + feed helpers.
-Builds under `-Wall -Wextra -Wpedantic -Werror`.
+Current state (v0.7.0-todo-impl): Honcho buffer dialectic (feed peer-card/conclude +
+cross-ctx parse), score→keep_mask history compress, `parse_data_rows` alias for
+app-flattened pqwire DATA_ROW text, Lua helpers, docs/ADR alignment with
+plumbing philosophy. Builds under `-Wall -Wextra -Wpedantic -Werror`.
 
 Domain vocabulary: **ADR 002**. Session model: **ADR 003** (one session per ctx).
+Plumbing philosophy: **ADR 004** (sibling-aligned).
 
 ---
 
@@ -39,13 +40,14 @@ Domain vocabulary: **ADR 002**. Session model: **ADR 003** (one session per ctx)
 ### 2.2  Participant lifecycle
 - [x] Remove / privilege / mute / capabilities
 - [x] Kind-specific SOUL defaults
-- [ ] Live Honcho peer integration tests (optional)
+- [x] Honcho buffer dialectic tests (caller-owned HTTP mock via buffers)
 
 ### 2.3  Message history
 - [x] Drop-oldest, export/import JSON
 - [x] `harness_history_compress` (heuristic keep-last; vector classify event)
 - [x] `harness_history_compress_select` (caller keep-mask after embedding scores)
-- [ ] True live embedding scoring via linked libpique (optional; needs real vectors)
+- [x] `harness_history_keep_mask_from_scores` / `compress_by_scores` (caller-supplied floats)
+- [ ] True live embedding scoring via real vectors + DB (optional; needs remote PG)
 
 ---
 
@@ -54,11 +56,13 @@ Domain vocabulary: **ADR 002**. Session model: **ADR 003** (one session per ctx)
 ### 3.1–3.2  Plumbing & mirror
 - [x] Request builder, parse, metadata, should_mirror, transport notes
 - [x] Lua should_mirror override
+- [x] feed_peer_card / feed_conclude stage path
 
 ### 3.3  Memory facts
 - [x] In-process KV
 - [x] Peer-card + conclude request builders
-- [ ] Live Honcho HTTP dialectic (caller-owned)
+- [x] Buffer dialectic (no network) for multi-party request/parse
+- [ ] Live Honcho HTTP against a real deployment (caller-owned; outside core)
 
 ---
 
@@ -74,7 +78,8 @@ Domain vocabulary: **ADR 002**. Session model: **ADR 003** (one session per ctx)
 - [x] Compress hook emits VECTOR_CLASSIFIED
 - [x] Embedding insert + similarity search SQL builders
 - [x] Feed embedding/similarity + parse similarity TSV into `VECTOR_HIT` events
-- [ ] Live pqwire DATA_ROW packing when app owns real chemistry with pg_vector
+- [x] `harness_pique_parse_data_rows` (DATA_ROW text handoff after app unpack)
+- [ ] Binary pqwire DATA_ROW decoding inside core (deferred; keep unpack in app)
 
 ---
 
@@ -85,6 +90,7 @@ Domain vocabulary: **ADR 002**. Session model: **ADR 003** (one session per ctx)
       history_compress, set_capabilities, soul_for_kind, load_script, …
 - [x] `next_event` / `drain_events` (coroutine-friendly event poll at boundaries)
 - [x] `wait_event` / `poll_until` yield helpers (return nil, "would_yield")
+- [x] history_compress_by_scores, honcho_feed_*, parse_data_rows
 
 ### 5.2  Loop criteria
 - [x] Built-in true/false + Lua expression + registered criterion fn
@@ -104,16 +110,23 @@ Domain vocabulary: **ADR 002**. Session model: **ADR 003** (one session per ctx)
 ## Lower Priority: Testing / docs
 
 ### 7.x
-- [x] Smoke, dialectic, history_stream, policy_pique tests
+- [x] Smoke, dialectic session, dialectic Honcho, history_stream, policy_pique tests
 - [x] fuzz_harness, dialectic_agents example
 - [x] `scripts/run_valgrind.sh` (skips if valgrind absent)
-- [x] ADR 003 documented
-- [ ] Keep AGENTS/ARCHITECTURE/DOMAIN fully polished
-- [ ] Adopt full common ADR set from shaggy (optional)
+- [x] ADR 001–004 documented (bootstrap, session, single-session, plumbing)
+- [x] AGENTS/ARCHITECTURE/DOMAIN aligned with v0.7 surface
+- [ ] Adopt remaining common ADR set from shaggy (005+) as needed for protocol steps
 
 ---
 
 ## Interface change log
+
+### v0.7 batch
+- [x] harness_history_keep_mask_from_scores / compress_by_scores
+- [x] harness_pique_parse_data_rows
+- [x] harness_honcho_feed_peer_card / feed_conclude
+- [x] tests/test_dialectic_honcho.c
+- [x] ADR 004 plumbing alignment + doc polish
 
 ### v0.6 batch
 - [x] CMake finds libpqwire (`pqwire.h` / `libpqwire.a`) as HAVE_PIQUE
@@ -146,3 +159,4 @@ Domain vocabulary: **ADR 002**. Session model: **ADR 003** (one session per ctx)
 
 - No sockets/HTTP/tool execution inside core
 - No mandatory Honcho or libpique at link time
+- No binary PostgreSQL wire row decoder inside core (app flattens to TSV)

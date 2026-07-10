@@ -109,6 +109,44 @@ int main(void) {
     }
     printf("  vector SQL + compress_select: OK\n");
 
+    /* After compress_select one message remains; rebuild history for score test */
+    assert(harness_message_append(ctx, "human_a", HARNESS_MSG_USER, "old-low", false) == 0);
+    assert(harness_message_append(ctx, "human_a", HARNESS_MSG_USER, "mid-score", false) == 0);
+    assert(harness_message_append(ctx, "human_a", HARNESS_MSG_USER, "best-hit", false) == 0);
+    {
+        float scores[4];
+        size_t mc = harness_message_count(ctx);
+        uint8_t mask[8];
+        assert(mc <= 4);
+        /* Index 0 kept from prior select may be secret/last; score table must match count */
+        scores[0] = 0.1f;
+        if (mc > 1) scores[1] = 0.2f;
+        if (mc > 2) scores[2] = 0.55f;
+        if (mc > 3) scores[3] = 0.99f;
+        assert(harness_history_keep_mask_from_scores(scores, mc, 2, mask, mc) == 0);
+        {
+            size_t ones = 0;
+            size_t i;
+            for (i = 0; i < mc; i++) if (mask[i]) ones++;
+            assert(ones == 2);
+            assert(mask[mc - 1] == 1); /* highest score last index wins when alone top */
+        }
+        assert(harness_history_compress_by_scores(ctx, scores, mc, 2) == 0);
+        assert(harness_message_count(ctx) == 2);
+    }
+    {
+        const char* rows = "0.88\tPersona A\n0.12|9|noise\n";
+        int n_rows = harness_pique_parse_data_rows(ctx, rows, 0);
+        harness_event_t ev;
+        int hits = 0;
+        assert(n_rows >= 2);
+        while (harness_next_event(ctx, &ev) == 0 && ev.type != HARNESS_EVENT_NONE) {
+            if (ev.type == HARNESS_EVENT_VECTOR_HIT) hits++;
+        }
+        assert(hits >= 2);
+    }
+    printf("  compress_by_scores + parse_data_rows: OK\n");
+
     assert(harness_pique_feed_embedding(ctx, "soul", "hello body",
                                         "'[0.1,0.2]'::vector") == 0);
     assert(harness_get_output(ctx, out, sizeof(out) - 1, &out_len) == 0);

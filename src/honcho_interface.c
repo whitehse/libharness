@@ -155,3 +155,30 @@ int harness_honcho_parse_response(harness_ctx_t* ctx, const uint8_t* data, size_
         harness_emit(ctx, HARNESS_EVENT_HONCHO_RESPONSE_PARSED, NULL, NULL, 0, 0);
     return 0;
 }
+
+int harness_honcho_feed_peer_card(harness_ctx_t* ctx, const char* peer_id) {
+    char buf[1024];
+    size_t n = 0;
+    if (!ctx || !peer_id) return -1;
+    if (harness_honcho_build_peer_card_request(ctx, peer_id, buf, sizeof(buf), &n) != 0)
+        return -1;
+    if (harness_set_output(ctx, buf, n) != 0) return -1;
+    harness_emit_ex(ctx, HARNESS_EVENT_HONCHO_REQUEST_READY, peer_id, NULL, 0, n,
+                    "peer_card");
+    return 0;
+}
+
+int harness_honcho_feed_conclude(harness_ctx_t* ctx,
+                                 const char* peer_id,
+                                 const char* conclusion) {
+    char buf[2048];
+    size_t n = 0;
+    if (!ctx || !peer_id || !conclusion) return -1;
+    if (harness_honcho_build_conclude_request(ctx, peer_id, conclusion, buf,
+                                              sizeof(buf), &n) != 0)
+        return -1;
+    if (harness_set_output(ctx, buf, n) != 0) return -1;
+    harness_emit_ex(ctx, HARNESS_EVENT_HONCHO_REQUEST_READY, peer_id, NULL, 0, n,
+                    "conclude");
+    return 0;
+}

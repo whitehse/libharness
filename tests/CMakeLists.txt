@@ -10,6 +10,11 @@ target_link_libraries(test_dialectic_session PRIVATE harness)
 target_include_directories(test_dialectic_session PRIVATE ../include)
 add_test(NAME dialectic_session COMMAND test_dialectic_session)
 
+add_executable(test_dialectic_honcho test_dialectic_honcho.c)
+target_link_libraries(test_dialectic_honcho PRIVATE harness)
+target_include_directories(test_dialectic_honcho PRIVATE ../include)
+add_test(NAME dialectic_honcho COMMAND test_dialectic_honcho)
+
 add_executable(test_history_stream test_history_stream.c)
 target_link_libraries(test_history_stream PRIVATE harness)
 target_include_directories(test_history_stream PRIVATE ../include)

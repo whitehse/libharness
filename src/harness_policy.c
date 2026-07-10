@@ -258,6 +258,59 @@ int harness_history_compress_select(harness_ctx_t* ctx,
     return 0;
 }
 
+int harness_history_keep_mask_from_scores(const float* scores,
+                                          size_t score_len,
+                                          size_t keep_count,
+                                          uint8_t* keep_mask,
+                                          size_t mask_len) {
+    size_t i;
+    size_t kept = 0;
+    if (!scores || !keep_mask || score_len == 0 || mask_len != score_len)
+        return -1;
+    memset(keep_mask, 0, mask_len);
+    if (keep_count == 0) keep_count = 1;
+    if (keep_count > score_len) keep_count = score_len;
+
+    /* O(n * keep) selection: repeatedly pick highest remaining score,
+     * breaking ties toward the higher (more recent) index. */
+    while (kept < keep_count) {
+        size_t best = (size_t)-1;
+        for (i = 0; i < score_len; i++) {
+            if (keep_mask[i]) continue;
+            if (best == (size_t)-1 ||
+                scores[i] > scores[best] ||
+                (scores[i] == scores[best] && i > best))
+                best = i;
+        }
+        if (best == (size_t)-1) break;
+        keep_mask[best] = 1;
+        kept++;
+    }
+    return 0;
+}
+
+int harness_history_compress_by_scores(harness_ctx_t* ctx,
+                                       const float* scores,
+                                       size_t score_len,
+                                       size_t keep_count) {
+    uint8_t* mask;
+    int rc;
+    if (!ctx || !scores || score_len != ctx->message_count) return -1;
+    mask = (uint8_t*)malloc(score_len ? score_len : 1);
+    if (!mask) return -1;
+    if (harness_history_keep_mask_from_scores(scores, score_len, keep_count,
+                                              mask, score_len) != 0) {
+        free(mask);
+        return -1;
+    }
+    rc = harness_history_compress_select(ctx, mask, score_len);
+    free(mask);
+    if (rc == 0)
+        harness_emit_ex(ctx, HARNESS_EVENT_VECTOR_CLASSIFIED, NULL, NULL,
+                        (int)keep_count, score_len, "compress_by_scores");
+    return rc;
+}
+
 int harness_pique_build_embedding_insert(const harness_ctx_t* ctx,
                                          const char* collection,
                                          const char* text,
@@ -519,4 +572,11 @@ int harness_pique_parse_similarity_tsv(harness_ctx_t* ctx,
     harness_emit_ex(ctx, HARNESS_EVENT_VECTOR_CLASSIFIED, NULL, NULL,
                     (int)rows, rows, "similarity_tsv");
     return (int)rows;
+}
+
+/* Alias for app pipelines that unpack pqwire DATA_ROW fields to TSV/pipe text. */
+int harness_pique_parse_data_rows(harness_ctx_t* ctx,
+                                  const char* data,
+                                  size_t len) {
+    return harness_pique_parse_similarity_tsv(ctx, data, len);
 }

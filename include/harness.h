@@ -325,6 +325,21 @@ int harness_history_compress_select(harness_ctx_t* ctx,
                                     const uint8_t* keep_mask,
                                     size_t mask_len);
 
+/* Build keep_mask from per-message similarity scores (higher = keep first).
+ * Keeps up to keep_count highest-score messages (always ≥1 if msg_count>0).
+ * On ties, prefer higher index (more recent). mask_len == score_len == msg_count. */
+int harness_history_keep_mask_from_scores(const float* scores,
+                                          size_t score_len,
+                                          size_t keep_count,
+                                          uint8_t* keep_mask,
+                                          size_t mask_len);
+
+/* Convenience: keep_mask_from_scores + compress_select in one step. */
+int harness_history_compress_by_scores(harness_ctx_t* ctx,
+                                       const float* scores,
+                                       size_t score_len,
+                                       size_t keep_count);
+
 /* Format identity prefix into buf, e.g. "[human_alice]". Returns bytes needed
  * (excluding NUL) or -1 on error. Truncates if buflen too small. */
 int harness_format_identity_prefix(const char* peer_id, char* buf, size_t buflen);
@@ -485,6 +500,15 @@ int harness_pique_parse_similarity_tsv(harness_ctx_t* ctx,
                                        const char* data,
                                        size_t len);
 
+/* Parse caller-flattened DataRow text (one row per line). Forms accepted:
+ *   score\ttext
+ *   score|id|text
+ * Same event emission as parse_similarity_tsv (VECTOR_HIT + VECTOR_CLASSIFIED).
+ * Name reflects the pqwire DATA_ROW handoff after the app unpacks rows to text. */
+int harness_pique_parse_data_rows(harness_ctx_t* ctx,
+                                  const char* data,
+                                  size_t len);
+
 /* When HAVE_PIQUE and config.pique_ctx is a pqwire client, submit staged SQL
  * in get_output via pqwire_send_query. Still no sockets — pure buffer staging. */
 int harness_pique_submit_staged(harness_ctx_t* ctx);
@@ -535,6 +559,13 @@ int harness_honcho_build_conclude_request(harness_ctx_t* ctx,
                                           char* buf,
                                           size_t cap,
                                           size_t* out_len);
+
+/* Stage peer-card / conclude request JSON into get_output (+ HONCHO_REQUEST_READY).
+ * Parallel to harness_pique_feed_* for dialectic and scripted apps. */
+int harness_honcho_feed_peer_card(harness_ctx_t* ctx, const char* peer_id);
+int harness_honcho_feed_conclude(harness_ctx_t* ctx,
+                                 const char* peer_id,
+                                 const char* conclusion);
 
 int harness_honcho_store_memory(harness_ctx_t* ctx,
                                 const char* peer_id,

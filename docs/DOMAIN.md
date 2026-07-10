@@ -117,7 +117,17 @@ log INSERT bodies. Embedding-assisted history reduction uses caller scores +
 `harness_history_compress_select`.
 
 Caller-fetched similarity results can be fed back as score/text lines with
-`harness_pique_parse_similarity_tsv` (emits `vector_hit` + summary
-`vector_classified`). When built with `HAVE_PIQUE` and `config.pique_ctx` is a
-pqwire client, `harness_pique_submit_staged` queues the staged SQL via
-`pqwire_send_query` (still buffer-only; sockets remain caller-owned).
+`harness_pique_parse_similarity_tsv` / `harness_pique_parse_data_rows` (emits
+`vector_hit` + summary `vector_classified`). Callers can also supply float scores
+per in-memory message and call `harness_history_compress_by_scores`.
+
+When built with `HAVE_PIQUE` and `config.pique_ctx` is a pqwire client,
+`harness_pique_submit_staged` queues the staged SQL via `pqwire_send_query`
+(still buffer-only; sockets remain caller-owned).
+
+## Honcho buffer dialectic (v0.7)
+
+`harness_honcho_feed_peer_card` / `feed_conclude` stage request JSON like the
+pique feed helpers. A second harness ctx can parse multi-peer Honcho-shaped JSON
+with `harness_honcho_parse_response` (no network). See
+`tests/test_dialectic_honcho.c` and `docs/honcho-transport-notes.md`.

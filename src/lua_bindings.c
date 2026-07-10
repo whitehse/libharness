@@ -312,6 +312,52 @@ static int l_history_compress_select(lua_State* L) {
     return 1;
 }
 
+/* history_compress_by_scores(score_table, keep_count) — scores are 1-based array of numbers. */
+static int l_history_compress_by_scores(lua_State* L) {
+    harness_ctx_t* ctx = l_ctx(L);
+    size_t mc;
+    size_t i;
+    float* scores;
+    size_t keep;
+    int rc;
+    luaL_checktype(L, 1, LUA_TTABLE);
+    keep = (size_t)luaL_optinteger(L, 2, 1);
+    mc = harness_message_count(ctx);
+    scores = (float*)malloc(mc ? mc * sizeof(float) : sizeof(float));
+    if (!scores) {
+        lua_pushinteger(L, -1);
+        return 1;
+    }
+    for (i = 0; i < mc; i++) {
+        lua_rawgeti(L, 1, (lua_Integer)(i + 1));
+        scores[i] = (float)lua_tonumber(L, -1);
+        lua_pop(L, 1);
+    }
+    rc = harness_history_compress_by_scores(ctx, scores, mc, keep);
+    free(scores);
+    lua_pushinteger(L, rc);
+    return 1;
+}
+
+static int l_honcho_feed_peer_card(lua_State* L) {
+    lua_pushinteger(L, harness_honcho_feed_peer_card(l_ctx(L), luaL_checkstring(L, 1)));
+    return 1;
+}
+
+static int l_honcho_feed_conclude(lua_State* L) {
+    lua_pushinteger(L, harness_honcho_feed_conclude(l_ctx(L),
+                                                    luaL_checkstring(L, 1),
+                                                    luaL_checkstring(L, 2)));
+    return 1;
+}
+
+static int l_pique_parse_data_rows(lua_State* L) {
+    size_t len = 0;
+    const char* data = luaL_checklstring(L, 1, &len);
+    lua_pushinteger(L, harness_pique_parse_data_rows(l_ctx(L), data, len));
+    return 1;
+}
+
 /* Install optional yield helpers on the global table after bind:
  * wait_event() — poll next; if none, hold a sentinel so coroutines can yield.
  * poll_until(type_name?) — drain until matching type (or any event) or nil.
@@ -417,7 +463,11 @@ static int harness_lua_bind(harness_ctx_t* ctx, lua_State* L) {
     register_fn(L, ctx, "pique_feed_embedding", l_pique_feed_embedding);
     register_fn(L, ctx, "pique_feed_similarity", l_pique_feed_similarity);
     register_fn(L, ctx, "pique_parse_similarity_tsv", l_pique_parse_similarity_tsv);
+    register_fn(L, ctx, "pique_parse_data_rows", l_pique_parse_data_rows);
     register_fn(L, ctx, "history_compress_select", l_history_compress_select);
+    register_fn(L, ctx, "history_compress_by_scores", l_history_compress_by_scores);
+    register_fn(L, ctx, "honcho_feed_peer_card", l_honcho_feed_peer_card);
+    register_fn(L, ctx, "honcho_feed_conclude", l_honcho_feed_conclude);
     lua_setglobal(L, "harness");
 
     if (ctx->config.lua_init_script && ctx->config.lua_init_script[0]) {

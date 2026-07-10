@@ -44,11 +44,17 @@ harness_pique_feed_similarity(ctx, "soul", "'[0.1,0.2,0.3]'::vector", 8);
 After the caller obtains similarity scores, apply compression or parse rows:
 
 ```c
-uint8_t keep[N]; /* 1 = keep message i */
+/* Preferred: let the library pick top-K by score */
+float scores[N]; /* parallel to message indices */
+harness_history_compress_by_scores(ctx, scores, message_count, keep_k);
+
+/* Or build the mask yourself */
+uint8_t keep[N];
+harness_history_keep_mask_from_scores(scores, N, keep_k, keep, N);
 harness_history_compress_select(ctx, keep, message_count);
 
-/* Or parse TSV-like results from the app's pg client: */
-harness_pique_parse_similarity_tsv(ctx,
+/* Or parse TSV-like results from the app's pg client / DATA_ROW flatten: */
+harness_pique_parse_data_rows(ctx,
     "0.91\tpreference for brevity\n0.40|12|noise\n", 0);
 /* → VECTOR_HIT (code = score*1000, detail = text) + VECTOR_CLASSIFIED */
 ```

@@ -32,10 +32,10 @@
 - State machine and Lua integration remain pure (inputs → state/output only; Lua for policy).
 - Harness characteristics (tools, personality, loop criteria) are exercisable via Lua interface.
 
-**Current status**: v0.6.0-todo-impl — pique feed/embed/similarity TSV events,
-optional HAVE_PIQUE (pqwire) submit_staged, Lua wait_event/poll_until. See TODO.md.
+**Current status**: v0.7.0-todo-impl — Honcho buffer dialectic, score-based
+history compress, DATA_ROW text parse, ADR 004 plumbing. See TODO.md.
 
-**Testing, Fuzzing & Valgrind Policy** (see ADR 003):
+**Testing, Fuzzing & Valgrind Policy** (see ADR 003 / sibling testing ADR lineage):
 - Every change to core files must add or update tests in `tests/`.
 - Run `ctest` before considering any change complete.
 - All tests must pass under Valgrind with no leaks or memory errors.
@@ -47,17 +47,21 @@ optional HAVE_PIQUE (pqwire) submit_staged, Lua wait_event/poll_until. See TODO.
 - Session: `harness_session_set/get`, `harness_set_acting_peer`, participant add/get/count
 - Messages: append (+ tool result), identity prefix helper; SOUL set/get; tool register JSON
 - Context/response: `harness_context_build`, `harness_response_parse`, status/tool_call_count; feed_input → parse; get_output
-- Events: structured `harness_event_t` via `harness_next_event`
-- Honcho: attach, mirror_message (narrative only), store/get memory stubs
+- Events: structured `harness_event_t` via `harness_next_event` (detail field)
+- Honcho: attach, mirror (narrative), store/get memory, feed_peer_card / feed_conclude builders
+- Pique: feed_sql/log/session/embedding/similarity, parse TSV/data_rows, optional submit_staged
+- History: compress, compress_select, keep_mask_from_scores / compress_by_scores
 - Lua: `harness_lua_init(ctx, void* L)` registers policy table when HAVE_LUA
 - Roles: MAIN, PROCESSOR, MEMORY
 - Domain rules: identity-prefixed session messages; secrets as references for non-privileged peers; tool calls not mirrored to Honcho by default
+- Plumbing: no sockets/syscalls in core (ADR 004)
 
 **Known Limitations / Areas for Improvement**:
 - Context/response JSON is hand-escaped substring parse; real JSON library optional
 - Multi-participant session plumbing is in-memory; live pique/Honcho I/O is caller-owned
-- Lua 5.4 assumed; higher-level coroutine yield helpers optional
-- Live embedding scoring / personality search needs linked libpique + pg_vector
+- Lua wait_event/poll_until helpers return ("would_yield"); app coroutines perform yields
+- Binary pqwire DATA_ROW unpack lives in the application (core accepts flattened TSV)
+- Live embedding scores require caller vectors / remote pg_vector
 - Provider response shape variance (chat completions vs Responses API) still to normalize in processor
 
 When making changes, prefer extending the event-driven path and Lua-exposed harness characteristics.

@@ -17,12 +17,13 @@
 
 ## Invariants
 - No sockets, files, malloc in hot paths unless caller-controlled.
-- All I/O (network to model providers, PG wire via pique, Honcho) owned by calling application or explicit context.
-- Lua is the policy layer; C is the plumbing (ADR 006 style).
+- All I/O (network to model providers, PG wire via pique/pqwire, Honcho HTTP) owned by calling application or explicit context.
+- Lua is the policy layer; C is the plumbing (ADR 004 / sibling ADR 006 style).
 - Extensions (C functions or Lua modules) registered at well-defined points without polluting core state machine.
 - Event-driven preferred: feed_input → next_event → get_output.
 - Secrets appear as references to non-privileged participants; core does not store secret material by policy default.
 - Tool call payloads are first-class in the OpenAI processor path and PG logs; they are not default Honcho messages.
+- Similarity results need only flattened text rows; binary DATA_ROW decoding is not performed in core.
 
 ## Deliberate Absences
 - No built-in HTTP client or OpenAI SDK (network in caller).
@@ -33,7 +34,9 @@
 
 ## Extension Points
 - harness_register_extension (C)
-- Lua: harness.register_tool, set_loop_criterion, set_should_mirror, next_event, drain_events, wait_event, poll_until, pique_feed_*, history_compress_select, session/participant helpers
+- Lua: harness.register_tool, set_loop_criterion, set_should_mirror, next_event, drain_events, wait_event, poll_until, pique_feed_*, history_compress_select/by_scores, honcho_feed_*, session/participant helpers
 - Sibling library APIs (libpique/pqwire, librest, shaggy, etc.) consumable from Lua via FFI or bindings.
+
+See also docs/decisions/004-core-as-plumbing.md.
 
 This design keeps the harness light, flexible, and true to the sibling library philosophy while enabling powerful Lua-orchestrated multi-participant AI sessions with persistent memory and vector intelligence.
