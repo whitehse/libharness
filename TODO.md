@@ -1,12 +1,12 @@
 # libharness — Implementation TODO
 
-Current state (v0.7.0-todo-impl): Honcho buffer dialectic (feed peer-card/conclude +
-cross-ctx parse), score→keep_mask history compress, `parse_data_rows` alias for
-app-flattened pqwire DATA_ROW text, Lua helpers, docs/ADR alignment with
-plumbing philosophy. Builds under `-Wall -Wextra -Wpedantic -Werror`.
+Current state (v0.8.0-todo-impl): provider response normalizer (chat.completions vs
+Responses API), usage input/output token aliases, unescape tool args, status /
+finish_reason handling, tests/test_response_normalize.c, adopted common ADRs
+005–008 (test/dialectic/opaque/Lua). Builds under `-Wall -Wextra -Wpedantic -Werror`.
 
-Domain vocabulary: **ADR 002**. Session model: **ADR 003** (one session per ctx).
-Plumbing philosophy: **ADR 004** (sibling-aligned).
+Domain vocabulary: **ADR 002**. Session model: **ADR 003**. Plumbing: **ADR 004**.
+Testing/dialectic/bindings/Lua: **ADR 005–008**.
 
 ---
 
@@ -14,8 +14,10 @@ Plumbing philosophy: **ADR 004** (sibling-aligned).
 
 ### 1.1–1.2  Context / response
 - [x] Identity prefix, secrets, tool_calls, multipart, stream, nested args, usage
-- [ ] Integration with a real JSON library if/when available (libjsparse is DOM-ref
-      scanner, not a general JSON library — leave hand path until a sibling exists)
+- [x] Normalize chat.completions vs Responses API paths (status, finish_reason,
+      message/tool extract, usage aliases, shape detail on events)
+- [ ] Integration with a real JSON library if/when a sibling exists (libjsparse is
+      DOM-ref scanner only — hand path remains default)
 
 ### 1.3  Tool registry
 - [x] C registration + tools_to_json
@@ -104,22 +106,30 @@ Plumbing philosophy: **ADR 004** (sibling-aligned).
 - [x] Deprecation note on bootstrap `harness_lua_*` wrappers
 - [x] Event `detail[]` field + `harness_emit_ex`
 - [x] PIQUE_SQL_READY / PIQUE_FEED_STAGED / VECTOR_HIT events
+- [x] Response event detail tags (`chat_completions` / `responses_api` / …)
 
 ---
 
 ## Lower Priority: Testing / docs
 
 ### 7.x
-- [x] Smoke, dialectic session, dialectic Honcho, history_stream, policy_pique tests
+- [x] Smoke, dialectic session, dialectic Honcho, history_stream, policy_pique,
+      response_normalize tests
 - [x] fuzz_harness, dialectic_agents example
 - [x] `scripts/run_valgrind.sh` (skips if valgrind absent)
-- [x] ADR 001–004 documented (bootstrap, session, single-session, plumbing)
-- [x] AGENTS/ARCHITECTURE/DOMAIN aligned with v0.7 surface
-- [ ] Adopt remaining common ADR set from shaggy (005+) as needed for protocol steps
+- [x] ADR 001–008 documented
+- [x] AGENTS/ARCHITECTURE/DOMAIN aligned with v0.8 surface
+- [ ] Further shaggy ADRs (HTTP/1.1, MITM, …) only if wire modules appear
 
 ---
 
 ## Interface change log
+
+### v0.8 batch
+- [x] Response normalizer: status/finish_reason, usage aliases, unescape args,
+      message/text extraction, shape-aware emit_ex detail
+- [x] tests/test_response_normalize.c
+- [x] ADR 005 testing/fuzz/valgrind, 006 dialectic, 007 opaque FFI, 008 Lua policy
 
 ### v0.7 batch
 - [x] harness_history_keep_mask_from_scores / compress_by_scores
@@ -160,3 +170,4 @@ Plumbing philosophy: **ADR 004** (sibling-aligned).
 - No sockets/HTTP/tool execution inside core
 - No mandatory Honcho or libpique at link time
 - No binary PostgreSQL wire row decoder inside core (app flattens to TSV)
+- No full general-purpose JSON library dependency until a sibling provides one

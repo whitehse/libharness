@@ -29,3 +29,8 @@ if(LUA_FOUND)
   target_link_libraries(test_policy_pique PRIVATE ${LUA_LIBRARIES})
 endif()
 add_test(NAME policy_pique COMMAND test_policy_pique)
+
+add_executable(test_response_normalize test_response_normalize.c)
+target_link_libraries(test_response_normalize PRIVATE harness)
+target_include_directories(test_response_normalize PRIVATE ../include)
+add_test(NAME response_normalize COMMAND test_response_normalize)

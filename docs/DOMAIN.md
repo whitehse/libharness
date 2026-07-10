@@ -52,11 +52,21 @@ That identity is the peer id used with Honcho and within libharness participant 
 
 ## Response
 
-Provider output normalized by the processor. Typical fields: `id`, `object`, `created`, `model`, `status`, `output`, `usage`.
+Provider output **normalized** by `harness_response_parse` into
+`harness_response_status_t`, tool_call table, assistant text, and usage.
 
-- `status: "requires_action"` — function/tool call items in `output`
-- `status: "completed"` — assistant message content
-- `usage` — prompt/completion/total tokens when present
+Two common open-provider shapes are accepted:
+
+1. **chat.completions** — `choices[].message` with `content` and/or `tool_calls`;
+   `finish_reason` (`stop` | `tool_calls`); usage `prompt_tokens` /
+   `completion_tokens` / `total_tokens`.
+2. **Responses API** — top-level `status` (`completed` | `requires_action` |
+   `incomplete` | `failed`); `output[]` of `message` / `function_call` items;
+   usage may use `input_tokens` / `output_tokens`.
+
+Events (`RESPONSE_COMPLETED` / `REQUIRES_ACTION` / `ERROR`) carry detail tags
+`chat_completions` or `responses_api` when the shape is detected. Callers still
+own network transport.
 
 ## Honcho
 

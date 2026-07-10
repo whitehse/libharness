@@ -208,15 +208,53 @@ fail:
 
 static const char* find_key(const char* json, const char* key) {
     char pattern[96];
+    const char* p = json;
+    size_t klen;
     snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    return strstr(json, pattern);
+    klen = strlen(pattern);
+    while (p && *p) {
+        const char* hit = strstr(p, pattern);
+        const char* after;
+        if (!hit) return NULL;
+        after = hit + klen;
+        while (*after && (*after == ' ' || *after == '\t' || *after == '\n' || *after == '\r'))
+            after++;
+        /* Require ':' after quoted name → treat as object key, not a value */
+        if (*after == ':')
+            return hit;
+        p = hit + klen;
+    }
+    return NULL;
+}
+
+/* Copy JSON string contents with minimal unescape (\\ \" \/ n t). */
+static void copy_json_string_contents(const char* p, const char* end,
+                                      char* out, size_t out_cap) {
+    size_t w = 0;
+    while (p < end && w + 1 < out_cap) {
+        if (*p == '\\' && p + 1 < end) {
+            char n = p[1];
+            if (n == '"' || n == '\\' || n == '/') {
+                out[w++] = n;
+                p += 2;
+                continue;
+            }
+            if (n == 'n') { out[w++] = '\n'; p += 2; continue; }
+            if (n == 't') { out[w++] = '\t'; p += 2; continue; }
+            if (n == 'r') { out[w++] = '\r'; p += 2; continue; }
+            /* drop unknown escape prefix, keep next char */
+            p++;
+            continue;
+        }
+        out[w++] = *p++;
+    }
+    out[w] = '\0';
 }
 
 static int extract_string_after_key(const char* json, const char* key,
                                     char* out, size_t out_cap) {
     const char* p = find_key(json, key);
     const char* q;
-    size_t n;
     if (!p || !out || out_cap == 0) return -1;
     /* Move past "key" */
     p += strlen(key) + 2;
@@ -232,11 +270,19 @@ static int extract_string_after_key(const char* json, const char* key,
         else q++;
     }
     if (*q != '"') return -1;
-    n = (size_t)(q - p);
-    if (n >= out_cap) n = out_cap - 1;
-    memcpy(out, p, n);
-    out[n] = '\0';
+    copy_json_string_contents(p, q, out, out_cap);
     return 0;
+}
+
+/* Read "status":"…" or null-terminated key form into out. */
+static int extract_status_string(const char* json, char* out, size_t out_cap) {
+    return extract_string_after_key(json, "status", out, out_cap);
+}
+
+static int extract_finish_reason(const char* json, char* out, size_t out_cap) {
+    if (extract_string_after_key(json, "finish_reason", out, out_cap) == 0)
+        return 0;
+    return extract_string_after_key(json, "stop_reason", out, out_cap);
 }
 
 static uint32_t extract_u32_after_key(const char* json, const char* key) {
@@ -258,8 +304,14 @@ static void clear_parse_state(harness_ctx_t* ctx) {
 }
 
 static void parse_usage(harness_ctx_t* ctx, const char* json) {
+    /* Chat Completions: prompt_tokens / completion_tokens
+     * Responses API / Anthropic-ish: input_tokens / output_tokens */
     ctx->last_usage.prompt_tokens = extract_u32_after_key(json, "prompt_tokens");
+    if (ctx->last_usage.prompt_tokens == 0)
+        ctx->last_usage.prompt_tokens = extract_u32_after_key(json, "input_tokens");
     ctx->last_usage.completion_tokens = extract_u32_after_key(json, "completion_tokens");
+    if (ctx->last_usage.completion_tokens == 0)
+        ctx->last_usage.completion_tokens = extract_u32_after_key(json, "output_tokens");
     ctx->last_usage.total_tokens = extract_u32_after_key(json, "total_tokens");
     if (ctx->last_usage.total_tokens == 0 &&
         (ctx->last_usage.prompt_tokens || ctx->last_usage.completion_tokens)) {
@@ -282,6 +334,33 @@ static int push_tool_call(harness_ctx_t* ctx, const char* id, const char* name,
     return 0;
 }
 
+/* Extract balanced {…} object starting at brace into out (truncated). */
+static int copy_balanced_object(const char* brace, char* out, size_t out_cap) {
+    int depth = 0;
+    const char* e;
+    size_t n;
+    if (!brace || *brace != '{' || !out || out_cap == 0) return -1;
+    e = brace;
+    do {
+        if (*e == '{') depth++;
+        else if (*e == '}') depth--;
+        else if (*e == '"' ) {
+            e++;
+            while (*e && *e != '"') {
+                if (*e == '\\' && e[1]) e += 2;
+                else e++;
+            }
+        }
+        if (*e) e++;
+    } while (*e && depth > 0);
+    if (depth != 0) return -1;
+    n = (size_t)(e - brace);
+    if (n >= out_cap) n = out_cap - 1;
+    memcpy(out, brace, n);
+    out[n] = '\0';
+    return 0;
+}
+
 /* Extract tool_calls from Chat Completions style or Responses API style. */
 static void parse_tool_calls(harness_ctx_t* ctx, const char* json) {
     const char* p = json;
@@ -296,6 +375,7 @@ static void parse_tool_calls(harness_ctx_t* ctx, const char* json) {
         const char* name_p;
         const char* args_p;
         const char* fn;
+        const char* type_fc;
 
         id[0] = name[0] = args[0] = '\0';
         start = NULL;
@@ -321,13 +401,18 @@ static void parse_tool_calls(harness_ctx_t* ctx, const char* json) {
             break;
         }
 
-        /* search forward for function name within next ~400 chars */
+        /* search forward for function name within next ~500 chars */
         fn = strstr(start, "\"function\"");
+        type_fc = strstr(start, "\"function_call\"");
         name_p = start;
         if (fn && fn < start + 500) name_p = fn;
+        else if (type_fc && type_fc < start + 500) name_p = type_fc;
         if (extract_string_after_key(name_p, "name", name, sizeof(name)) != 0) {
-            p = start + 4;
-            continue;
+            /* Responses API may place "name" as sibling of call_id */
+            if (extract_string_after_key(start, "name", name, sizeof(name)) != 0) {
+                p = start + 4;
+                continue;
+            }
         }
 
         args_p = name_p;
@@ -337,20 +422,10 @@ static void parse_tool_calls(harness_ctx_t* ctx, const char* json) {
             args[0] = '\0';
             if (ak) {
                 const char* brace = strchr(ak, '{');
-                if (brace) {
-                    int depth = 0;
-                    const char* e = brace;
-                    do {
-                        if (*e == '{') depth++;
-                        else if (*e == '}') depth--;
-                        e++;
-                    } while (*e && depth > 0);
-                    if (depth == 0) {
-                        size_t n = (size_t)(e - brace);
-                        if (n >= sizeof(args)) n = sizeof(args) - 1;
-                        memcpy(args, brace, n);
-                        args[n] = '\0';
-                    }
+                if (brace && copy_balanced_object(brace, args, sizeof(args)) == 0) {
+                    /* ok */
+                } else {
+                    harness_copy_id(args, sizeof(args), "{}");
                 }
             }
             if (!args[0])
@@ -362,16 +437,69 @@ static void parse_tool_calls(harness_ctx_t* ctx, const char* json) {
     }
 }
 
+/* Prefer message-shaped assistant text over incidental other "content" keys. */
 static void parse_assistant_text(harness_ctx_t* ctx, const char* json) {
-    /* Prefer "content":"text" simple string; else nested "text":"..." */
+    const char* msg;
+    const char* choice_msg;
+    char refusal[HARNESS_ASSISTANT_TEXT_CAP];
+
+    ctx->last_assistant_text[0] = '\0';
+    refusal[0] = '\0';
+
+    /* Chat Completions: choices[…].message.content */
+    choice_msg = strstr(json, "\"message\"");
+    if (choice_msg) {
+        if (extract_string_after_key(choice_msg, "content",
+                ctx->last_assistant_text, sizeof(ctx->last_assistant_text)) == 0) {
+            if (strcmp(ctx->last_assistant_text, "null") == 0)
+                ctx->last_assistant_text[0] = '\0';
+            if (ctx->last_assistant_text[0] != '\0')
+                return;
+        }
+        if (extract_string_after_key(choice_msg, "refusal", refusal, sizeof(refusal)) == 0 &&
+            refusal[0] && strcmp(refusal, "null") != 0) {
+            harness_copy_id(ctx->last_assistant_text, sizeof(ctx->last_assistant_text),
+                            refusal);
+            return;
+        }
+    }
+
+    /* Responses API: "type":"message" then nested "text":"..." */
+    msg = strstr(json, "\"type\":\"message\"");
+    if (!msg)
+        msg = strstr(json, "\"type\": \"message\"");
+    if (msg) {
+        if (extract_string_after_key(msg, "text",
+                ctx->last_assistant_text, sizeof(ctx->last_assistant_text)) == 0 &&
+            ctx->last_assistant_text[0] != '\0')
+            return;
+    }
+
+    /* Fallback: first top-ish "text" then "content" string */
+    if (extract_string_after_key(json, "text", ctx->last_assistant_text,
+                                 sizeof(ctx->last_assistant_text)) == 0) {
+        if (strcmp(ctx->last_assistant_text, "null") == 0)
+            ctx->last_assistant_text[0] = '\0';
+        if (ctx->last_assistant_text[0] != '\0')
+            return;
+    }
     if (extract_string_after_key(json, "content", ctx->last_assistant_text,
                                  sizeof(ctx->last_assistant_text)) == 0) {
         if (strcmp(ctx->last_assistant_text, "null") == 0)
             ctx->last_assistant_text[0] = '\0';
-        return;
     }
-    (void)extract_string_after_key(json, "text", ctx->last_assistant_text,
-                                   sizeof(ctx->last_assistant_text));
+}
+
+static int has_error_object(const char* json) {
+    const char* err = strstr(json, "\"error\"");
+    if (!err) return 0;
+    /* Avoid matching "error" keys inside unrelated strings: require nearby object/colon */
+    err = strchr(err, ':');
+    if (!err) return 0;
+    err++;
+    while (*err && isspace((unsigned char)*err)) err++;
+    if (*err == '{' || *err == '"') return 1;
+    return 0;
 }
 
 int harness_openai_response_parse_impl(harness_ctx_t* ctx, const uint8_t* data, size_t len) {
@@ -379,6 +507,9 @@ int harness_openai_response_parse_impl(harness_ctx_t* ctx, const uint8_t* data, 
     int requires = 0;
     int is_error = 0;
     int incomplete = 0;
+    char status[64];
+    char finish_reason[64];
+    const char* shape_detail = "normalized";
 
     if (!ctx || !data || len == 0) return -1;
 
@@ -388,45 +519,71 @@ int harness_openai_response_parse_impl(harness_ctx_t* ctx, const uint8_t* data, 
     tmp[len] = '\0';
 
     clear_parse_state(ctx);
+    status[0] = finish_reason[0] = '\0';
+    (void)extract_status_string(tmp, status, sizeof(status));
+    (void)extract_finish_reason(tmp, finish_reason, sizeof(finish_reason));
     parse_usage(ctx, tmp);
 
-    if (strstr(tmp, "\"error\"") != NULL && strstr(tmp, "\"message\"") != NULL)
+    if (has_error_object(tmp))
         is_error = 1;
-    if (strstr(tmp, "\"status\":\"incomplete\"") != NULL ||
+    if (strcmp(status, "failed") == 0 || strcmp(status, "error") == 0)
+        is_error = 1;
+    if (strcmp(status, "incomplete") == 0 ||
+        strstr(tmp, "\"status\":\"incomplete\"") != NULL ||
         strstr(tmp, "\"status\": \"incomplete\"") != NULL)
         incomplete = 1;
 
     parse_tool_calls(ctx, tmp);
     parse_assistant_text(ctx, tmp);
 
-    if (strstr(tmp, "requires_action") != NULL ||
+    /* Shape hint for event detail */
+    if (strstr(tmp, "\"object\":\"chat.completion\"") != NULL ||
+        strstr(tmp, "\"choices\"") != NULL)
+        shape_detail = "chat_completions";
+    else if (strstr(tmp, "\"object\":\"response\"") != NULL ||
+             strstr(tmp, "\"output\"") != NULL)
+        shape_detail = "responses_api";
+
+    if (strcmp(status, "requires_action") == 0 ||
+        strcmp(finish_reason, "tool_calls") == 0 ||
+        strcmp(finish_reason, "tool_use") == 0 ||
         strstr(tmp, "\"tool_calls\"") != NULL ||
         strstr(tmp, "function_call") != NULL ||
         ctx->last_tool_call_count > 0) {
         requires = 1;
     }
+    /* Explicit completed status without tool payload wins over false positives */
+    if (strcmp(status, "completed") == 0 && ctx->last_tool_call_count == 0 &&
+        strcmp(finish_reason, "tool_calls") != 0)
+        requires = 0;
+    if (strcmp(finish_reason, "stop") == 0 && ctx->last_tool_call_count == 0)
+        requires = 0;
 
     if (is_error) {
         ctx->last_response_status = HARNESS_RESPONSE_ERROR;
         ctx->state = HARNESS_STATE_ERROR;
-        harness_emit(ctx, HARNESS_EVENT_RESPONSE_ERROR, ctx->acting_peer_id, NULL, -1, 0);
+        harness_emit_ex(ctx, HARNESS_EVENT_RESPONSE_ERROR, ctx->acting_peer_id, NULL,
+                        -1, 0, shape_detail);
     } else if (incomplete && !requires) {
         ctx->last_response_status = HARNESS_RESPONSE_INCOMPLETE;
         ctx->state = HARNESS_STATE_READY;
-        harness_emit(ctx, HARNESS_EVENT_RESPONSE_ERROR, ctx->acting_peer_id, NULL, 1, 0);
+        harness_emit_ex(ctx, HARNESS_EVENT_RESPONSE_ERROR, ctx->acting_peer_id, NULL,
+                        1, 0, "incomplete");
     } else if (requires) {
         if (ctx->last_tool_call_count == 0) {
-            /* ensure at least a placeholder if heuristics fired without extract */
+            /* heuristics fired without extract — placeholder for loop policy */
             (void)push_tool_call(ctx, "call_unknown", "unknown", "{}", "function");
         }
         ctx->last_response_status = HARNESS_RESPONSE_REQUIRES_ACTION;
         ctx->state = HARNESS_STATE_TOOL_CALL;
-        harness_emit(ctx, HARNESS_EVENT_RESPONSE_REQUIRES_ACTION, ctx->acting_peer_id,
-                     ctx->parsed_tool_calls[0].id, 0, ctx->last_tool_call_count);
+        harness_emit_ex(ctx, HARNESS_EVENT_RESPONSE_REQUIRES_ACTION, ctx->acting_peer_id,
+                        ctx->parsed_tool_calls[0].id, 0, ctx->last_tool_call_count,
+                        shape_detail);
     } else {
         ctx->last_response_status = HARNESS_RESPONSE_COMPLETED;
         ctx->state = HARNESS_STATE_READY;
-        harness_emit(ctx, HARNESS_EVENT_RESPONSE_COMPLETED, ctx->acting_peer_id, NULL, 0, 0);
+        harness_emit_ex(ctx, HARNESS_EVENT_RESPONSE_COMPLETED, ctx->acting_peer_id, NULL,
+                        0, 0, shape_detail);
     }
 
     (void)harness_set_output(ctx, data, len);

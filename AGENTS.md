@@ -32,10 +32,10 @@
 - State machine and Lua integration remain pure (inputs → state/output only; Lua for policy).
 - Harness characteristics (tools, personality, loop criteria) are exercisable via Lua interface.
 
-**Current status**: v0.7.0-todo-impl — Honcho buffer dialectic, score-based
-history compress, DATA_ROW text parse, ADR 004 plumbing. See TODO.md.
+**Current status**: v0.8.0-todo-impl — response shape normalizer (chat vs Responses
+API), common ADRs 005–008, response_normalize test. See TODO.md.
 
-**Testing, Fuzzing & Valgrind Policy** (see ADR 003 / sibling testing ADR lineage):
+**Testing, Fuzzing & Valgrind Policy** (see ADR 005; sibling testing ADR lineage):
 - Every change to core files must add or update tests in `tests/`.
 - Run `ctest` before considering any change complete.
 - All tests must pass under Valgrind with no leaks or memory errors.
@@ -46,7 +46,7 @@ history compress, DATA_ROW text parse, ADR 004 plumbing. See TODO.md.
 - `harness_create` / `harness_create_with_config` / destroy / reset
 - Session: `harness_session_set/get`, `harness_set_acting_peer`, participant add/get/count
 - Messages: append (+ tool result), identity prefix helper; SOUL set/get; tool register JSON
-- Context/response: `harness_context_build`, `harness_response_parse`, status/tool_call_count; feed_input → parse; get_output
+- Context/response: `harness_context_build`, `harness_response_parse` (normalized shapes), status/tool_call_count; feed_input → parse; get_output
 - Events: structured `harness_event_t` via `harness_next_event` (detail field)
 - Honcho: attach, mirror (narrative), store/get memory, feed_peer_card / feed_conclude builders
 - Pique: feed_sql/log/session/embedding/similarity, parse TSV/data_rows, optional submit_staged
@@ -57,18 +57,19 @@ history compress, DATA_ROW text parse, ADR 004 plumbing. See TODO.md.
 - Plumbing: no sockets/syscalls in core (ADR 004)
 
 **Known Limitations / Areas for Improvement**:
-- Context/response JSON is hand-escaped substring parse; real JSON library optional
+- Context/response JSON is hand-escaped substring parse (normalized heuristics);
+  real JSON library optional when a sibling exists
 - Multi-participant session plumbing is in-memory; live pique/Honcho I/O is caller-owned
 - Lua wait_event/poll_until helpers return ("would_yield"); app coroutines perform yields
 - Binary pqwire DATA_ROW unpack lives in the application (core accepts flattened TSV)
 - Live embedding scores require caller vectors / remote pg_vector
-- Provider response shape variance (chat completions vs Responses API) still to normalize in processor
+- Exotic provider shapes beyond chat.completions / Responses may still need normalizer extensions
 
 When making changes, prefer extending the event-driven path and Lua-exposed harness characteristics.
 
-**ADR 010 Alignment (C Interfaces and Implementations + Language Bindings)**:
+**ADR 010 / Lua alignment** (local ADR 007 + ADR 008):
 - All public interfaces follow opaque type principles from Hanson's *C Interfaces and Implementations*.
 - Public headers are designed to be FFI-friendly (simple types, no complex macros or bitfields).
 - Consistent naming and clear ownership semantics.
-- Lua bindings use standard luaL_newlib style for easy consumption from Lua.
+- Lua bindings use standard registration style; policy VM remains optional and outside core I/O (ADR 008).
 - When adding or modifying public functions, prefer designs that are easy to consume from C and Lua.

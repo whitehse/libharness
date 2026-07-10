@@ -789,7 +789,7 @@ int harness_register_extension(harness_ctx_t* ctx, const char* name, harness_ext
 }
 
 const char* harness_version(void) {
-    return "0.7.0-todo-impl";
+    return "0.8.0-todo-impl";
 }
 
 /* ---- Compatibility wrappers ---- */

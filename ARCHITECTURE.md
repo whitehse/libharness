@@ -3,7 +3,9 @@
 ## Module Boundaries
 - **harness.c** + **src/harness_internal.h**: Core state machine (INIT, READY, PROCESSING_OPENAI, TOOL_CALL, LOOPING, LOGGING, VECTOR_OP, ERROR). Structured event queue. Session/participant/message/SOUL/tool slots (ADR 002). Pure, no syscalls.
 - **lua_bindings.c**: Lua C API integration (`harness_lua_init`). Exposes policy helpers (tools, SOUL, loop, participants, messages, context_build, Honcho mirror). Scripts prefer PG/memory over paths.
-- **openai_processor.c**: Context builder + response status parse (identity prefix, secret references, tools). JSON only; transport in caller (librest/shaggy or other providers).
+- **openai_processor.c**: Context builder + response normalizer (chat.completions
+  and Responses API shapes). Hand-escaped JSON extractors; transport in caller
+  (librest/shaggy or other providers). Events carry shape detail tags.
 - **honcho_interface.c**: Optional Honcho handle attach; mirror policy is narrative-only by default (tool calls excluded).
 - **pique_integration.c**: libpique/pqwire helpers (no sockets). SQL builders for interaction log, session upsert, embeddings, similarity search. Feed path stages SQL into get_output (`harness_pique_feed_*`) and emits PIQUE_* events. Optional `HAVE_PIQUE` + `harness_pique_submit_staged` calls `pqwire_send_query` on `config.pique_ctx` (still no network). Similarity TSV parse emits VECTOR_HIT. Secret redaction on log SQL by default.
 - **harness_extra.c / harness_policy.c**: mute, multipart, history, stream, log ring; capabilities, kind SOUL, compress, Honcho builders, pique feed/redaction/similarity parse.
