@@ -32,13 +32,25 @@ harness_pique_feed_log(ctx, "gpt-4o", prompt_json, response_json);
 
 ## Embeddings / similarity (pg_vector shape)
 
-Caller supplies the vector **SQL literal** (already formatted), never a float
-array from inside the library:
+Caller may supply a ready SQL vector literal, or format real float dimensions:
 
 ```c
-harness_pique_feed_embedding(ctx, "soul", text, "'[0.1,0.2,0.3]'::vector");
-harness_pique_feed_similarity(ctx, "soul", "'[0.1,0.2,0.3]'::vector", 8);
+float dims[] = {0.1f, 0.2f, 0.3f};
+char lit[128];
+size_t n;
+harness_pique_format_vector_literal(dims, 3, lit, sizeof(lit), &n);
+/* lit == "'[0.1,0.2,0.3]'::vector" */
+
+harness_pique_feed_embedding(ctx, "soul", text, lit);
+harness_pique_feed_similarity(ctx, "soul", lit, 8);
 /* or the build_* helpers if you want SQL without staging */
+```
+
+Message text for embedding is available without JSON export:
+
+```c
+char content[4096];
+harness_message_get(ctx, i, NULL, 0, NULL, content, sizeof(content), NULL);
 ```
 
 After the caller obtains similarity scores, apply compression or parse rows:
@@ -48,16 +60,23 @@ After the caller obtains similarity scores, apply compression or parse rows:
 float scores[N]; /* parallel to message indices */
 harness_history_compress_by_scores(ctx, scores, message_count, keep_k);
 
+/* Or parse TSV scores only (no VECTOR_HIT events) */
+size_t n_scores = 0;
+harness_pique_parse_similarity_scores(tsv, 0, scores, N, &n_scores);
+
 /* Or build the mask yourself */
 uint8_t keep[N];
 harness_history_keep_mask_from_scores(scores, N, keep_k, keep, N);
 harness_history_compress_select(ctx, keep, message_count);
 
 /* Or parse TSV-like results from the app's pg client / DATA_ROW flatten: */
-harness_pique_parse_data_rows(ctx,
-    "0.91\tpreference for brevity\n0.40|12|noise\n", 0);
+const char* rows = "0.91\tpreference for brevity\n0.40|12|noise\n";
+harness_pique_parse_data_rows(ctx, rows, strlen(rows));
 /* → VECTOR_HIT (code = score*1000, detail = text) + VECTOR_CLASSIFIED */
 ```
+
+Live remote PG remains caller-owned: stage SQL → app feeds pqwire/libpique →
+flatten DATA_ROW → parse scores → compress. See `tests/test_vector_scoring.c`.
 
 ## Optional HAVE_PIQUE (libpqwire)
 

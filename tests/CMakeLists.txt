@@ -34,3 +34,8 @@ add_executable(test_response_normalize test_response_normalize.c)
 target_link_libraries(test_response_normalize PRIVATE harness)
 target_include_directories(test_response_normalize PRIVATE ../include)
 add_test(NAME response_normalize COMMAND test_response_normalize)
+
+add_executable(test_vector_scoring test_vector_scoring.c)
+target_link_libraries(test_vector_scoring PRIVATE harness)
+target_include_directories(test_vector_scoring PRIVATE ../include)
+add_test(NAME vector_scoring COMMAND test_vector_scoring)

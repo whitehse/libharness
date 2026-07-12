@@ -131,6 +131,19 @@ Caller-fetched similarity results can be fed back as score/text lines with
 `vector_hit` + summary `vector_classified`). Callers can also supply float scores
 per in-memory message and call `harness_history_compress_by_scores`.
 
+## Live-shaped vector scoring (v0.9)
+
+Offline path (no sockets) for real embedding floats:
+
+1. `harness_message_get` — read message text for embed requests.
+2. `harness_pique_format_vector_literal` — float dims → `'[...]'::vector`.
+3. `harness_pique_feed_embedding` / `feed_similarity` — stage SQL for caller→PG.
+4. After app flattens rows: `harness_pique_parse_similarity_scores` (floats only)
+   or parse_data_rows (events).
+5. `harness_history_compress_by_scores` when scores align to message indices.
+
+Remote PG/Honcho HTTP remain caller-owned. See `tests/test_vector_scoring.c`.
+
 When built with `HAVE_PIQUE` and `config.pique_ctx` is a pqwire client,
 `harness_pique_submit_staged` queues the staged SQL via `pqwire_send_query`
 (still buffer-only; sockets remain caller-owned).

@@ -7,8 +7,8 @@
   and Responses API shapes). Hand-escaped JSON extractors; transport in caller
   (librest/shaggy or other providers). Events carry shape detail tags.
 - **honcho_interface.c**: Optional Honcho handle attach; mirror policy is narrative-only by default (tool calls excluded).
-- **pique_integration.c**: libpique/pqwire helpers (no sockets). SQL builders for interaction log, session upsert, embeddings, similarity search. Feed path stages SQL into get_output (`harness_pique_feed_*`) and emits PIQUE_* events. Optional `HAVE_PIQUE` + `harness_pique_submit_staged` calls `pqwire_send_query` on `config.pique_ctx` (still no network). Similarity TSV parse emits VECTOR_HIT. Secret redaction on log SQL by default.
-- **harness_extra.c / harness_policy.c**: mute, multipart, history, stream, log ring; capabilities, kind SOUL, compress, Honcho builders, pique feed/redaction/similarity parse.
+- **pique_integration.c**: libpique/pqwire helpers (no sockets). SQL builders for interaction log, session upsert, embeddings, similarity search. Feed path stages SQL into get_output (`harness_pique_feed_*`) and emits PIQUE_* events. Optional `HAVE_PIQUE` + `harness_pique_submit_staged` calls `pqwire_send_query` on `config.pique_ctx` (still no network). Similarity TSV parse emits VECTOR_HIT; float[] → vector SQL literal and score-array parse support the offline live-path. Secret redaction on log SQL by default.
+- **harness_extra.c / harness_policy.c**: mute, multipart, history, stream, log ring; capabilities, kind SOUL, compress, Honcho builders, pique feed/redaction/similarity parse, vector literal format.
 
 ## Domain model (see ADR 002, DOMAIN.md)
 - **Session**: durable multi-party thread; humans/apps/agents as peer participants.
@@ -36,7 +36,7 @@
 
 ## Extension Points
 - harness_register_extension (C)
-- Lua: harness.register_tool, set_loop_criterion, set_should_mirror, next_event, drain_events, wait_event, poll_until, pique_feed_*, history_compress_select/by_scores, honcho_feed_*, session/participant helpers
+- Lua: harness.register_tool, set_loop_criterion, set_should_mirror, next_event, drain_events, wait_event, poll_until, pique_feed_*, pique_format_vector_literal, pique_parse_similarity_scores, message_get, history_compress_select/by_scores, honcho_feed_*, session/participant helpers
 - Sibling library APIs (libpique/pqwire, librest, shaggy, etc.) consumable from Lua via FFI or bindings.
 
 See also docs/decisions/004-core-as-plumbing.md.

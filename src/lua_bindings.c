@@ -98,6 +98,89 @@ static int l_history_compress(lua_State* L) {
     return 1;
 }
 
+static int l_message_get(lua_State* L) {
+    harness_ctx_t* ctx = l_ctx(L);
+    size_t index = (size_t)luaL_checkinteger(L, 1);
+    char peer[HARNESS_PEER_ID_CAP];
+    char content[HARNESS_MSG_CONTENT_MAX];
+    harness_message_role_t role = HARNESS_MSG_USER;
+    bool secret = false;
+    if (harness_message_get(ctx, index, peer, sizeof(peer), &role,
+                            content, sizeof(content), &secret) != 0) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_createtable(L, 0, 4);
+    lua_pushstring(L, peer);
+    lua_setfield(L, -2, "peer_id");
+    lua_pushinteger(L, (lua_Integer)role);
+    lua_setfield(L, -2, "role");
+    lua_pushstring(L, content);
+    lua_setfield(L, -2, "content");
+    lua_pushboolean(L, secret ? 1 : 0);
+    lua_setfield(L, -2, "is_secret");
+    return 1;
+}
+
+static int l_pique_format_vector_literal(lua_State* L) {
+    size_t n;
+    size_t i;
+    float* dims;
+    char lit[4096];
+    size_t out_len = 0;
+    luaL_checktype(L, 1, LUA_TTABLE);
+    n = (size_t)lua_rawlen(L, 1);
+    if (n == 0) {
+        lua_pushnil(L);
+        return 1;
+    }
+    dims = (float*)malloc(n * sizeof(float));
+    if (!dims) {
+        lua_pushnil(L);
+        return 1;
+    }
+    for (i = 0; i < n; i++) {
+        lua_rawgeti(L, 1, (lua_Integer)(i + 1));
+        dims[i] = (float)lua_tonumber(L, -1);
+        lua_pop(L, 1);
+    }
+    if (harness_pique_format_vector_literal(dims, n, lit, sizeof(lit), &out_len) != 0) {
+        free(dims);
+        lua_pushnil(L);
+        return 1;
+    }
+    free(dims);
+    lua_pushlstring(L, lit, out_len);
+    return 1;
+}
+
+static int l_pique_parse_similarity_scores(lua_State* L) {
+    size_t len = 0;
+    const char* data = luaL_checklstring(L, 1, &len);
+    size_t cap = (size_t)luaL_optinteger(L, 2, 64);
+    float* scores;
+    size_t count = 0;
+    size_t i;
+    if (cap == 0) cap = 64;
+    scores = (float*)malloc(cap * sizeof(float));
+    if (!scores) {
+        lua_pushnil(L);
+        return 1;
+    }
+    if (harness_pique_parse_similarity_scores(data, len, scores, cap, &count) != 0) {
+        free(scores);
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_createtable(L, (int)count, 0);
+    for (i = 0; i < count; i++) {
+        lua_pushnumber(L, (lua_Number)scores[i]);
+        lua_rawseti(L, -2, (lua_Integer)(i + 1));
+    }
+    free(scores);
+    return 1;
+}
+
 static int l_set_capabilities(lua_State* L) {
     lua_pushinteger(L, harness_participant_set_capabilities(
         l_ctx(L), luaL_checkstring(L, 1), (uint32_t)luaL_checkinteger(L, 2)));
@@ -452,6 +535,9 @@ static int harness_lua_bind(harness_ctx_t* ctx, lua_State* L) {
     register_fn(L, ctx, "set_should_mirror", l_set_should_mirror);
     register_fn(L, ctx, "set_loop_criterion", l_set_loop_criterion);
     register_fn(L, ctx, "history_compress", l_history_compress);
+    register_fn(L, ctx, "message_get", l_message_get);
+    register_fn(L, ctx, "pique_format_vector_literal", l_pique_format_vector_literal);
+    register_fn(L, ctx, "pique_parse_similarity_scores", l_pique_parse_similarity_scores);
     register_fn(L, ctx, "set_capabilities", l_set_capabilities);
     register_fn(L, ctx, "soul_for_kind", l_soul_for_kind);
     register_fn(L, ctx, "next_event", l_next_event);

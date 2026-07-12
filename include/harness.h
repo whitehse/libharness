@@ -306,6 +306,18 @@ int harness_message_append_parts(harness_ctx_t* ctx,
 
 size_t harness_message_count(const harness_ctx_t* ctx);
 
+/* Read one message by index (for embedding / scoring pipelines).
+ * peer_id_out / content_out may be NULL when not needed; caps ignored then.
+ * content is raw stored text (may be multipart JSON when content_is_parts). */
+int harness_message_get(const harness_ctx_t* ctx,
+                        size_t index,
+                        char* peer_id_out,
+                        size_t peer_id_cap,
+                        harness_message_role_t* role_out,
+                        char* content_out,
+                        size_t content_cap,
+                        bool* is_secret_out);
+
 /* Stable secret reference id for message index (0 if not secret). */
 uint32_t harness_message_secret_ref(const harness_ctx_t* ctx, size_t index);
 
@@ -449,6 +461,15 @@ int harness_pique_build_session_upsert(const harness_ctx_t* ctx,
                                        size_t cap,
                                        size_t* out_len);
 
+/* Format float dimensions as a pgvector SQL literal: '[d0,d1,...]'::vector.
+ * Pure buffer write (no PG). Used before feed_embedding / feed_similarity when
+ * the caller already has real embedding floats from a model or remote service. */
+int harness_pique_format_vector_literal(const float* dims,
+                                        size_t n_dims,
+                                        char* buf,
+                                        size_t cap,
+                                        size_t* out_len);
+
 /* Embedding / similarity SQL builders (vector column as caller-provided literal,
  * e.g. \"'[0.1,0.2,...]'::vector\" — library never talks to PG). */
 int harness_pique_build_embedding_insert(const harness_ctx_t* ctx,
@@ -508,6 +529,17 @@ int harness_pique_parse_similarity_tsv(harness_ctx_t* ctx,
 int harness_pique_parse_data_rows(harness_ctx_t* ctx,
                                   const char* data,
                                   size_t len);
+
+/* Extract numeric scores from the same TSV/pipe text forms without events.
+ * Writes up to scores_cap floats; *out_count is rows written (if non-NULL).
+ * Returns 0 on success (including zero rows), -1 on hard error.
+ * Use with harness_history_compress_by_scores when scores already align to
+ * message indices, or as a pure float parse step after app DATA_ROW flatten. */
+int harness_pique_parse_similarity_scores(const char* data,
+                                          size_t len,
+                                          float* scores,
+                                          size_t scores_cap,
+                                          size_t* out_count);
 
 /* When HAVE_PIQUE and config.pique_ctx is a pqwire client, submit staged SQL
  * in get_output via pqwire_send_query. Still no sockets — pure buffer staging. */

@@ -447,6 +447,29 @@ size_t harness_message_count(const harness_ctx_t* ctx) {
     return ctx ? ctx->message_count : 0;
 }
 
+int harness_message_get(const harness_ctx_t* ctx,
+                        size_t index,
+                        char* peer_id_out,
+                        size_t peer_id_cap,
+                        harness_message_role_t* role_out,
+                        char* content_out,
+                        size_t content_cap,
+                        bool* is_secret_out) {
+    const harness_message_slot_t* m;
+    if (!ctx || index >= ctx->message_count) return -1;
+    m = &ctx->messages[index];
+    if (!m->in_use) return -1;
+    if (peer_id_out && peer_id_cap > 0) {
+        harness_copy_id(peer_id_out, peer_id_cap, m->peer_id);
+    }
+    if (role_out) *role_out = m->role;
+    if (content_out && content_cap > 0) {
+        harness_copy_id(content_out, content_cap, m->content);
+    }
+    if (is_secret_out) *is_secret_out = m->is_secret;
+    return 0;
+}
+
 uint32_t harness_message_secret_ref(const harness_ctx_t* ctx, size_t index) {
     if (!ctx || index >= ctx->message_count) return 0;
     return ctx->messages[index].secret_ref_id;
@@ -789,7 +812,7 @@ int harness_register_extension(harness_ctx_t* ctx, const char* name, harness_ext
 }
 
 const char* harness_version(void) {
-    return "0.8.0-todo-impl";
+    return "0.9.0-todo-impl";
 }
 
 /* ---- Compatibility wrappers ---- */

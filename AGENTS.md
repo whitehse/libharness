@@ -32,8 +32,9 @@
 - State machine and Lua integration remain pure (inputs → state/output only; Lua for policy).
 - Harness characteristics (tools, personality, loop criteria) are exercisable via Lua interface.
 
-**Current status**: v0.8.0-todo-impl — response shape normalizer (chat vs Responses
-API), common ADRs 005–008, response_normalize test. See TODO.md.
+**Current status**: v0.9.0-todo-impl — live-vector scoring plumbing
+(message_get, format_vector_literal, parse_similarity_scores) + prior response
+normalizer and common ADRs 005–008. See TODO.md.
 
 **Testing, Fuzzing & Valgrind Policy** (see ADR 005; sibling testing ADR lineage):
 - Every change to core files must add or update tests in `tests/`.
@@ -45,11 +46,11 @@ API), common ADRs 005–008, response_normalize test. See TODO.md.
 - Opaque `harness_ctx_t`; `harness_config_t` (event_queue_size, max_participants/messages/tools, workspace_id, session_id, acting_peer_id, pique_ctx, honcho_ctx, …)
 - `harness_create` / `harness_create_with_config` / destroy / reset
 - Session: `harness_session_set/get`, `harness_set_acting_peer`, participant add/get/count
-- Messages: append (+ tool result), identity prefix helper; SOUL set/get; tool register JSON
+- Messages: append (+ tool result), identity prefix helper, message_get; SOUL set/get; tool register JSON
 - Context/response: `harness_context_build`, `harness_response_parse` (normalized shapes), status/tool_call_count; feed_input → parse; get_output
 - Events: structured `harness_event_t` via `harness_next_event` (detail field)
 - Honcho: attach, mirror (narrative), store/get memory, feed_peer_card / feed_conclude builders
-- Pique: feed_sql/log/session/embedding/similarity, parse TSV/data_rows, optional submit_staged
+- Pique: feed_sql/log/session/embedding/similarity, format_vector_literal, parse TSV/scores/data_rows, optional submit_staged
 - History: compress, compress_select, keep_mask_from_scores / compress_by_scores
 - Lua: `harness_lua_init(ctx, void* L)` registers policy table when HAVE_LUA
 - Roles: MAIN, PROCESSOR, MEMORY
@@ -62,7 +63,7 @@ API), common ADRs 005–008, response_normalize test. See TODO.md.
 - Multi-participant session plumbing is in-memory; live pique/Honcho I/O is caller-owned
 - Lua wait_event/poll_until helpers return ("would_yield"); app coroutines perform yields
 - Binary pqwire DATA_ROW unpack lives in the application (core accepts flattened TSV)
-- Live embedding scores require caller vectors / remote pg_vector
+- Live embedding DB queries require remote pg_vector; core formats vectors + applies caller scores
 - Exotic provider shapes beyond chat.completions / Responses may still need normalizer extensions
 
 When making changes, prefer extending the event-driven path and Lua-exposed harness characteristics.

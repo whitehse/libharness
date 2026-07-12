@@ -311,6 +311,33 @@ int harness_history_compress_by_scores(harness_ctx_t* ctx,
     return rc;
 }
 
+int harness_pique_format_vector_literal(const float* dims,
+                                        size_t n_dims,
+                                        char* buf,
+                                        size_t cap,
+                                        size_t* out_len) {
+    size_t used = 0;
+    size_t i;
+    if (!dims || n_dims == 0 || !buf || cap < 16) return -1;
+    if (harness_json_append_raw(buf, cap, &used, "'[") != 0) return -1;
+    for (i = 0; i < n_dims; i++) {
+        char num[64];
+        int n;
+        if (i > 0) {
+            if (harness_json_append_raw(buf, cap, &used, ",") != 0) return -1;
+        }
+        /* C locale %g; avoid trailing zeros explosion. */
+        n = snprintf(num, sizeof(num), "%.9g", (double)dims[i]);
+        if (n < 0 || (size_t)n >= sizeof(num)) return -1;
+        if (harness_json_append_raw(buf, cap, &used, num) != 0) return -1;
+    }
+    if (harness_json_append_raw(buf, cap, &used, "]'::vector") != 0) return -1;
+    if (used >= cap) return -1;
+    buf[used] = '\0';
+    if (out_len) *out_len = used;
+    return 0;
+}
+
 int harness_pique_build_embedding_insert(const harness_ctx_t* ctx,
                                          const char* collection,
                                          const char* text,
@@ -579,4 +606,69 @@ int harness_pique_parse_data_rows(harness_ctx_t* ctx,
                                   const char* data,
                                   size_t len) {
     return harness_pique_parse_similarity_tsv(ctx, data, len);
+}
+
+int harness_pique_parse_similarity_scores(const char* data,
+                                          size_t len,
+                                          float* scores,
+                                          size_t scores_cap,
+                                          size_t* out_count) {
+    size_t i = 0;
+    size_t written = 0;
+    if (!data) return -1;
+    if (len == 0) len = strlen(data);
+    if (scores_cap > 0 && !scores) return -1;
+
+    while (i < len) {
+        size_t line_start = i;
+        size_t line_end;
+        char line[512];
+        size_t copy_n;
+        char* p;
+        char* tab;
+        char* pipe;
+        char* end = NULL;
+        double v;
+
+        while (i < len && data[i] != '\n' && data[i] != '\r') i++;
+        line_end = i;
+        while (i < len && (data[i] == '\n' || data[i] == '\r')) i++;
+        if (line_end == line_start) continue;
+
+        copy_n = line_end - line_start;
+        if (copy_n >= sizeof(line)) copy_n = sizeof(line) - 1;
+        memcpy(line, data + line_start, copy_n);
+        line[copy_n] = '\0';
+
+        p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0' || *p == '#') continue;
+
+        tab = strchr(p, '\t');
+        pipe = strchr(p, '|');
+        if (tab && (!pipe || tab < pipe)) {
+            *tab = '\0';
+        } else if (pipe) {
+            *pipe = '\0';
+        } else {
+            continue;
+        }
+
+        while (*p == ' ' || *p == '\t') p++;
+        v = strtod(p, &end);
+        if (end == p) continue;
+        if (written < scores_cap) {
+            scores[written] = (float)v;
+            written++;
+        } else if (scores_cap == 0) {
+            /* count-only: still advance written for out_count when cap is 0 */
+            written++;
+        } else {
+            /* buffer full: stop accepting more (stable truncate) */
+            break;
+        }
+    }
+
+    if (out_count) *out_count = written;
+    return 0;
 }

@@ -1,9 +1,10 @@
 # libharness — Implementation TODO
 
-Current state (v0.8.0-todo-impl): provider response normalizer (chat.completions vs
-Responses API), usage input/output token aliases, unescape tool args, status /
-finish_reason handling, tests/test_response_normalize.c, adopted common ADRs
-005–008 (test/dialectic/opaque/Lua). Builds under `-Wall -Wextra -Wpedantic -Werror`.
+Current state (v0.9.0-todo-impl): live-vector scoring plumbing without remote
+PG — `harness_message_get`, `harness_pique_format_vector_literal`,
+`harness_pique_parse_similarity_scores`, test_vector_scoring dialectic, Lua
+helpers. Prior: response normalizer, common ADRs 005–008. Builds under
+`-Wall -Wextra -Wpedantic -Werror`.
 
 Domain vocabulary: **ADR 002**. Session model: **ADR 003**. Plumbing: **ADR 004**.
 Testing/dialectic/bindings/Lua: **ADR 005–008**.
@@ -17,7 +18,7 @@ Testing/dialectic/bindings/Lua: **ADR 005–008**.
 - [x] Normalize chat.completions vs Responses API paths (status, finish_reason,
       message/tool extract, usage aliases, shape detail on events)
 - [ ] Integration with a real JSON library if/when a sibling exists (libjsparse is
-      DOM-ref scanner only — hand path remains default)
+      DOM-ref scanner only — hand path remains default; non-goal until sibling JSON)
 
 ### 1.3  Tool registry
 - [x] C registration + tools_to_json
@@ -49,7 +50,10 @@ Testing/dialectic/bindings/Lua: **ADR 005–008**.
 - [x] `harness_history_compress` (heuristic keep-last; vector classify event)
 - [x] `harness_history_compress_select` (caller keep-mask after embedding scores)
 - [x] `harness_history_keep_mask_from_scores` / `compress_by_scores` (caller-supplied floats)
-- [ ] True live embedding scoring via real vectors + DB (optional; needs remote PG)
+- [x] `harness_message_get` for embedding pipeline text access
+- [x] Real float vectors → `harness_pique_format_vector_literal` + score parse → compress
+      (offline dialectic; live DB still caller-owned — see Deferred)
+- [ ] Live query against a remote PG/pg_vector deployment (caller-owned I/O)
 
 ---
 
@@ -81,7 +85,9 @@ Testing/dialectic/bindings/Lua: **ADR 005–008**.
 - [x] Embedding insert + similarity search SQL builders
 - [x] Feed embedding/similarity + parse similarity TSV into `VECTOR_HIT` events
 - [x] `harness_pique_parse_data_rows` (DATA_ROW text handoff after app unpack)
-- [ ] Binary pqwire DATA_ROW decoding inside core (deferred; keep unpack in app)
+- [x] `harness_pique_format_vector_literal` (float[] → `'[...]'::vector`)
+- [x] `harness_pique_parse_similarity_scores` (TSV → float[] without events)
+- [ ] Binary pqwire DATA_ROW decoding inside core (deferred non-goal; keep unpack in app)
 
 ---
 
@@ -93,6 +99,7 @@ Testing/dialectic/bindings/Lua: **ADR 005–008**.
 - [x] `next_event` / `drain_events` (coroutine-friendly event poll at boundaries)
 - [x] `wait_event` / `poll_until` yield helpers (return nil, "would_yield")
 - [x] history_compress_by_scores, honcho_feed_*, parse_data_rows
+- [x] message_get, pique_format_vector_literal, pique_parse_similarity_scores
 
 ### 5.2  Loop criteria
 - [x] Built-in true/false + Lua expression + registered criterion fn
@@ -114,16 +121,23 @@ Testing/dialectic/bindings/Lua: **ADR 005–008**.
 
 ### 7.x
 - [x] Smoke, dialectic session, dialectic Honcho, history_stream, policy_pique,
-      response_normalize tests
+      response_normalize, vector_scoring tests
 - [x] fuzz_harness, dialectic_agents example
 - [x] `scripts/run_valgrind.sh` (skips if valgrind absent)
 - [x] ADR 001–008 documented
-- [x] AGENTS/ARCHITECTURE/DOMAIN aligned with v0.8 surface
+- [x] AGENTS/ARCHITECTURE/DOMAIN aligned with v0.9 surface
 - [ ] Further shaggy ADRs (HTTP/1.1, MITM, …) only if wire modules appear
 
 ---
 
 ## Interface change log
+
+### v0.9 batch
+- [x] harness_message_get (index → peer/role/content/secret)
+- [x] harness_pique_format_vector_literal (float[] → pgvector SQL literal)
+- [x] harness_pique_parse_similarity_scores (TSV/pipe → float[])
+- [x] Lua message_get / pique_format_vector_literal / pique_parse_similarity_scores
+- [x] tests/test_vector_scoring.c (offline live-path dialectic)
 
 ### v0.8 batch
 - [x] Response normalizer: status/finish_reason, usage aliases, unescape args,
@@ -162,6 +176,20 @@ Testing/dialectic/bindings/Lua: **ADR 005–008**.
 - [x] Honcho peer_card / conclude builders
 - [x] Lua register_tool / invoke / should_mirror / loop criterion / expression eval
 - [x] ADR 003 + valgrind script + policy_pique test
+
+---
+
+## Deferred / caller-owned (not core)
+
+These remain open by design (see Non-goals + ADR 004):
+
+| Item | Why deferred |
+|------|----------------|
+| Real JSON library integration | No sibling JSON parser yet; hand extractors stay default |
+| Live remote PG/pg_vector I/O | Core stages SQL only; app owns sockets |
+| Live Honcho HTTP | Core builds/parses buffers; app owns transport |
+| Binary pqwire DATA_ROW in core | Explicit non-goal; app flattens to TSV |
+| Further shaggy wire ADRs | Only if HTTP/1.1 / MITM modules appear in this repo |
 
 ---
 
