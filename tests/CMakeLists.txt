@@ -39,3 +39,8 @@ add_executable(test_vector_scoring test_vector_scoring.c)
 target_link_libraries(test_vector_scoring PRIVATE harness)
 target_include_directories(test_vector_scoring PRIVATE ../include)
 add_test(NAME vector_scoring COMMAND test_vector_scoring)
+
+add_executable(test_explain_tool test_explain_tool.c)
+target_link_libraries(test_explain_tool PRIVATE harness)
+target_include_directories(test_explain_tool PRIVATE ../include)
+add_test(NAME explain_tool COMMAND test_explain_tool)
